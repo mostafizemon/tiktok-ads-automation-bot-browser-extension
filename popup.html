@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TikTok Ads Automation Bot</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <div class="brand-info">
+          <h1 class="brand-title">TikTok Ads Bot</h1>
+          <span class="brand-subtitle">Orbita / GoLogin Edition • v1.0.0</span>
+        </div>
+      </div>
+      <div id="connectionBadge" class="connection-badge status-checking">
+        <span class="status-dot"></span>
+        <span id="connectionText">Checking Tab...</span>
+      </div>
+    </header>
+
+    <!-- Tab Notice (visible if not on TikTok) -->
+    <div id="tabNoticeBanner" class="tab-notice-banner hidden">
+      <span id="tabNoticeText">Please open TikTok Ads Manager Campaigns page.</span>
+      <a href="https://ads.tiktok.com/i18n/manage/campaign" target="_blank" id="openTikTokLink">Open Campaigns</a>
+    </div>
+
+    <!-- Status & Feedback Toast -->
+    <div id="feedbackBanner" class="feedback-banner hidden" role="alert"></div>
+
+    <!-- Main Configuration Form -->
+    <main class="content">
+      <form id="configForm" novalidate>
+        <!-- Website URL -->
+        <div class="form-group">
+          <label for="websiteUrl" class="form-label">
+            Website URL <span class="required">*</span>
+          </label>
+          <div class="input-wrapper">
+            <input
+              type="url"
+              id="websiteUrl"
+              class="form-input"
+              placeholder="https://example.com/landing-page"
+              autocomplete="off"
+              required
+            >
+          </div>
+          <span class="form-hint">Destination landing page URL for ads.</span>
+        </div>
+
+        <!-- Budget & Campaign Count Row -->
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="dailyBudget" class="form-label">
+              Daily Budget ($) <span class="required">*</span>
+            </label>
+            <div class="input-wrapper">
+              <span class="input-prefix">$</span>
+              <input
+                type="number"
+                id="dailyBudget"
+                class="form-input input-has-prefix"
+                placeholder="50.00"
+                min="1"
+                step="0.01"
+                required
+              >
+            </div>
+            <span class="form-hint">USD per campaign (Min $20).</span>
+          </div>
+
+          <div class="form-group flex-1">
+            <label for="campaignCount" class="form-label">
+              Campaigns <span class="required">*</span>
+            </label>
+            <div class="input-wrapper">
+              <input
+                type="number"
+                id="campaignCount"
+                class="form-input"
+                value="1"
+                min="1"
+                max="100"
+                required
+              >
+            </div>
+            <span class="form-hint">Sequential batch count.</span>
+          </div>
+        </div>
+
+        <!-- Target Countries (Multi-Select Tag UI) -->
+        <div class="form-group">
+          <label class="form-label">
+            Target Countries <span class="required">*</span>
+          </label>
+          <div class="countries-container" id="countriesContainer">
+            <div class="tags-list" id="selectedCountriesList"></div>
+            <div class="country-input-row">
+              <input
+                type="text"
+                id="countrySearchInput"
+                class="form-input country-search-input"
+                placeholder="Type country name & press Add..."
+                list="countriesDataList"
+                autocomplete="off"
+              >
+              <button type="button" id="addCountryBtn" class="btn btn-sm btn-outline">+ Add</button>
+            </div>
+            <datalist id="countriesDataList">
+              <option value="United States"></option>
+              <option value="Canada"></option>
+              <option value="United Kingdom"></option>
+              <option value="Australia"></option>
+              <option value="Germany"></option>
+              <option value="France"></option>
+              <option value="Bangladesh"></option>
+              <option value="Brazil"></option>
+              <option value="Mexico"></option>
+              <option value="Japan"></option>
+              <option value="South Korea"></option>
+            </datalist>
+          </div>
+          <span class="form-hint">Support multiple target countries (e.g. United States, Canada).</span>
+        </div>
+
+        <!-- Spark Ads Authorization Code -->
+        <div class="form-group">
+          <label for="authCode" class="form-label">
+            Spark Ads Auth Code <span class="required">*</span>
+          </label>
+          <div class="input-wrapper">
+            <input
+              type="password"
+              id="authCode"
+              class="form-input code-font"
+              placeholder="Paste Post Authorization Code..."
+              autocomplete="off"
+              required
+            >
+            <button type="button" id="toggleAuthCodeVisibility" class="btn-icon" title="Toggle visibility">👁️</button>
+          </div>
+          <span class="form-hint">Code is encrypted in transit and masked in logs.</span>
+        </div>
+
+        <!-- Publishing Mode Selector -->
+        <div class="mode-select-card">
+          <div class="mode-toggle-header">
+            <span class="form-label">Execution Mode</span>
+            <span id="modeBadge" class="mode-pill mode-test">TEST MODE</span>
+          </div>
+          <div class="mode-toggle-row">
+            <label class="radio-label">
+              <input type="radio" name="publishMode" value="test" id="modeTestRadio" checked>
+              <span>Test Mode (Automates flow without publishing)</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="publishMode" value="live" id="modeLiveRadio">
+              <span class="text-danger">Live Mode (Clicks Publish All)</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Action Controls -->
+        <div class="actions-group">
+          <button type="submit" id="saveConfigBtn" class="btn btn-secondary">
+            Save Config
+          </button>
+          <button type="button" id="startAutomationBtn" class="btn btn-primary">
+            Start Automation
+          </button>
+        </div>
+
+        <!-- Runtime Execution Controls (Pause / Resume / Stop) -->
+        <div id="runtimeControls" class="runtime-controls-group hidden">
+          <button type="button" id="pauseBtn" class="btn btn-warning flex-1">Pause</button>
+          <button type="button" id="resumeBtn" class="btn btn-success flex-1 hidden">Resume</button>
+          <button type="button" id="stopBtn" class="btn btn-danger flex-1">Stop</button>
+        </div>
+      </form>
+
+      <!-- Live Progress & Status Dashboard -->
+      <section class="status-section">
+        <div class="status-card">
+          <div class="status-row">
+            <span class="status-label">Status:</span>
+            <span id="botStateBadge" class="badge badge-idle">IDLE</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Progress:</span>
+            <span id="progressText" class="status-val text-accent">0 / 0 Completed</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Current Step:</span>
+            <span id="currentStepText" class="status-val text-muted text-truncate">Ready</span>
+          </div>
+          <div id="lastErrorRow" class="status-row hidden">
+            <span class="status-label text-error">Error:</span>
+            <span id="lastErrorText" class="status-val text-error text-truncate"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Pre-Start Live Confirmation Modal -->
+    <div id="confirmationModal" class="modal-backdrop hidden">
+      <div class="modal-dialog">
+        <h3 id="modalTitle" class="modal-title">Confirm Campaign Automation</h3>
+        <p class="modal-desc">Please review the configuration before starting automated campaign creation:</p>
+        <div class="summary-card">
+          <div class="summary-item">
+            <span>Campaigns:</span>
+            <strong id="summaryCount">1</strong>
+          </div>
+          <div class="summary-item">
+            <span>Budget per Campaign:</span>
+            <strong id="summaryBudget">$50.00</strong>
+          </div>
+          <div class="summary-item">
+            <span>Target Countries:</span>
+            <strong id="summaryCountries">United States</strong>
+          </div>
+          <div class="summary-item summary-total">
+            <span>Total Estimated Daily Exposure:</span>
+            <strong id="summaryExposure" class="text-accent">$50.00 / day</strong>
+          </div>
+          <div class="summary-item">
+            <span>Publish Mode:</span>
+            <strong id="summaryMode">TEST MODE</strong>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="cancelConfirmBtn" class="btn btn-secondary">Cancel</button>
+          <button type="button" id="proceedConfirmBtn" class="btn btn-primary">Confirm & Start</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>TikTok Ads Automation Bot</span>
+      <span class="footer-divider">•</span>
+      <span id="versionLabel">GoLogin Orbita</span>
+    </footer>
+  </div>
+
+  <script src="storage.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

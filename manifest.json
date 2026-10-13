@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "TikTok Ads Automation Bot",
+  "version": "1.0.0",
+  "description": "Production-grade automated campaign creation tool for TikTok Ads Manager inside GoLogin / Orbita Chromium.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://ads.tiktok.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://ads.tiktok.com/*"
+      ],
+      "js": [
+        "storage.js",
+        "automation/helpers.js",
+        "automation/popup-handler.js",
+        "automation/custom-mode.js",
+        "automation/campaign.js",
+        "automation/runner.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "TikTok Ads Automation Bot",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
