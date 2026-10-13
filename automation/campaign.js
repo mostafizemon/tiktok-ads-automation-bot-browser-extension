@@ -119,6 +119,7 @@
 
       if (global.CustomModeHandler) {
         await global.CustomModeHandler.ensureCustomMode(8000);
+        console.log('[RUNNER] Continuing Traffic objective selection');
       }
 
       this.diag(stepName, 'Custom Mode evaluation finished', {

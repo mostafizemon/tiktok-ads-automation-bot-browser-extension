@@ -215,6 +215,7 @@
       if (!element || !(element instanceof Element)) return false;
 
       const text = (element.innerText || element.textContent || '').toLowerCase();
+      if (text.includes('guided mode') || global.CustomModeHandler?.ownsGuidedDialog(element)) return false;
 
       // Must contain BOTH "Got it" and "Take a tour"
       const hasGotIt = text.includes('got it');
@@ -379,6 +380,10 @@
      */
     classifyDialog(element) {
       const text = (element.innerText || element.textContent || '').toLowerCase();
+
+      if (text.includes('guided mode') || global.CustomModeHandler?.ownsGuidedDialog(element)) {
+        return { type: POPUP_TYPES.WORKFLOW_CRITICAL, reason: 'Guided Mode exit confirmation' };
+      }
 
       // Check for known tutorial popup first
       if (this.isTutorialModalElement(element)) {
