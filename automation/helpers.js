@@ -136,7 +136,8 @@
      * @returns {boolean}
      */
     isVisible(element) {
-      if (!element || !(element instanceof Element)) return false;
+      if (!element) return false;
+      if (typeof Element !== 'undefined' && !(element instanceof Element)) return false;
       const style = window.getComputedStyle(element);
       if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
         return false;
