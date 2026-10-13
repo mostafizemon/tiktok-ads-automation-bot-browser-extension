@@ -27,6 +27,7 @@
   class CampaignAutomation {
     constructor() {
       this.name = 'CampaignAutomation';
+      this._isAddPostRunning = false;
     }
 
     get helpers() {
@@ -2120,6 +2121,475 @@
       h.safeClick(confirmBtn, 'Drawer Confirm button');
 
       await h.sleep(2000);
+    }
+
+    /**
+     * Check whether the TikTok posts drawer is in an empty state
+     * (e.g. "Leverage TikTok posts in your ads", Confirm disabled, no post cards)
+     * @param {HTMLElement} drawer
+     * @returns {boolean}
+     */
+    isTikTokPostDrawerEmpty(drawer) {
+      const h = this.helpers;
+      if (!drawer) return true;
+
+      // 1. Check for visible post cards or checkbox items
+      const postItems = this.findPostItemsInDrawer(drawer);
+      if (postItems.length > 0) {
+        return false;
+      }
+
+      // 2. Check for empty-state text indicators
+      const drawerText = (drawer.innerText || drawer.textContent || '').toLowerCase();
+      const hasEmptyText = drawerText.includes('leverage tiktok posts in your ads') ||
+                           drawerText.includes('add authorized post') ||
+                           drawerText.includes('no data') ||
+                           drawerText.includes('no posts found') ||
+                           drawerText.includes('no content');
+
+      // 3. Check for dedicated empty-state containers
+      const emptyContainers = h.queryShadowAll('.byted-empty, .arco-empty, [class*="empty-state"], [class*="no-data"]', drawer);
+      const hasEmptyContainer = emptyContainers.some(el => h.isVisible(el));
+
+      // 4. Confirm button state
+      const confirmBtn = h.queryShadow('button[data-testid="hybrid-drawer-footer-submit-button"]', drawer);
+      const isConfirmDisabled = !confirmBtn || confirmBtn.disabled ||
+                                confirmBtn.getAttribute('aria-disabled') === 'true' ||
+                                confirmBtn.classList.contains('is-disabled');
+
+      return (hasEmptyText || hasEmptyContainer || postItems.length === 0) && isConfirmDisabled;
+    }
+
+    /**
+     * Find visible candidate TikTok post items in drawer
+     * Strictly excludes:
+     * - "Add post" button: button[data-testid="tab-mixed-post-tab-mixed-post-kQtpVD"]
+     * - Toolbar buttons and search/filter inputs
+     * - Header, tablist, and footer submit/confirm buttons
+     * - Empty-state containers
+     * @param {HTMLElement} drawer
+     * @returns {HTMLElement[]}
+     */
+    findPostItemsInDrawer(drawer) {
+      const h = this.helpers;
+      if (!drawer) return [];
+
+      const candidates = h.queryShadowAll(
+        '[data-testid*="post-item"], [data-testid*="post-card"], [class*="post-card"], [class*="video-card"], [class*="media-card"], [class*="tiktok-post-item"], [class*="mixed-post-item"], [class*="grid-item"], [class*="list-item"], .byted-checkbox, .arco-checkbox',
+        drawer
+      );
+
+      const filtered = candidates.filter(el => {
+        if (!h.isVisible(el)) return false;
+
+        const testId = (el.getAttribute('data-testid') || '').toLowerCase();
+
+        // 1. Explicitly exclude Add Post buttons, toolbar buttons, and drawer action buttons
+        if (
+          testId.includes('tab-mixed-post') ||
+          testId.includes('mixed-post-tab') ||
+          testId.includes('hybrid-drawer-footer') ||
+          testId.includes('batch-authorize') ||
+          testId.includes('cancel') ||
+          testId.includes('close') ||
+          testId.includes('link-account') ||
+          testId.includes('account-link')
+        ) {
+          return false;
+        }
+
+        // 2. Exclude ANY element inside drawer header, footer, tablist, toolbar, or empty state
+        if (typeof el.closest === 'function') {
+          if (el.closest(
+            '.byted-drawer-header, .arco-drawer-header, [class*="drawer-header"], ' +
+            '.byted-drawer-footer, .arco-drawer-footer, [class*="drawer-footer"], ' +
+            '[role="tablist"], [role="tab"], ' +
+            '[class*="toolbar"], [class*="action-bar"], [class*="filter-bar"], [class*="search-bar"], ' +
+            '.byted-empty, .arco-empty, [class*="empty-state"], [class*="no-data"]'
+          )) {
+            return false;
+          }
+
+          // Modal exclusions: exclude elements in floating modals, but NEVER exclude the drawer itself
+          const modal = el.closest('.byted-modal, .arco-modal, [class*="modal-content"]');
+          if (modal) return false;
+
+          const dialog = el.closest('[role="dialog"]');
+          if (dialog && dialog !== drawer && !drawer.contains(dialog)) {
+            return false;
+          }
+        }
+
+        // 3. Exclude interactive controls that are not post card containers
+        const tag = el.tagName ? el.tagName.toUpperCase() : '';
+        if (tag === 'BUTTON' || (tag === 'INPUT' && el.type !== 'checkbox' && el.type !== 'radio') || tag === 'TEXTAREA') {
+          const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+          if (text === 'add post' || text === 'confirm' || text === 'cancel' || text === 'link tiktok account' || text.includes('search') || text.includes('filter')) {
+            return false;
+          }
+          if (tag === 'BUTTON' && !testId.includes('post-item') && !testId.includes('post-card')) {
+            return false;
+          }
+        }
+
+        return true;
+      });
+
+      // Deduplicate nested items: if a parent card is in filtered, don't return both parent and its inner checkbox
+      return filtered.filter(item => {
+        let parent = item.parentElement;
+        while (parent && parent !== drawer) {
+          if (filtered.includes(parent)) return false;
+          parent = parent.parentElement;
+        }
+        return true;
+      });
+    }
+
+    /**
+     * Find post items in drawer that match the requested post or authCode
+     * @param {HTMLElement} drawer
+     * @param {string} [authCode='']
+     * @returns {HTMLElement[]}
+     */
+    findMatchingPostItems(drawer, authCode = '') {
+      const allPosts = this.findPostItemsInDrawer(drawer);
+      if (allPosts.length === 0) return [];
+
+      const cleanCode = (authCode || '').trim().toLowerCase();
+      if (cleanCode) {
+        const matching = allPosts.filter(item => {
+          const text = (item.innerText || item.textContent || '').toLowerCase();
+          const testId = (item.getAttribute('data-testid') || '').toLowerCase();
+          return text.includes(cleanCode) || testId.includes(cleanCode);
+        });
+        if (matching.length > 0) return matching;
+      }
+
+      return allPosts;
+    }
+
+    /**
+     * Select a post item in the drawer (click checkbox or card)
+     * @param {HTMLElement} drawer
+     * @param {HTMLElement} [postItem]
+     * @param {string} [authCode]
+     * @returns {Promise<boolean>}
+     */
+    async selectPostInDrawer(drawer, postItem = null, authCode = '') {
+      const h = this.helpers;
+      const target = postItem || this.findMatchingPostItems(drawer, authCode)[0] || this.findPostItemsInDrawer(drawer)[0];
+      if (!target) return false;
+
+      const checkbox = target.querySelector ? target.querySelector('[role="checkbox"], input[type="checkbox"], .byted-checkbox, .arco-checkbox') : null;
+      const clickTarget = checkbox || target;
+
+      clickTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await h.sleep(200);
+      h.safeClick(clickTarget, 'TikTok post selection');
+      await h.sleep(600);
+      return true;
+    }
+
+    /**
+     * Wait for Confirm button to become enabled in drawer footer
+     * @param {HTMLElement} drawer
+     * @param {number} [timeoutMs=5000]
+     * @returns {Promise<HTMLElement|null>}
+     */
+    async waitForConfirmButtonEnabled(drawer, timeoutMs = 5000) {
+      return this.waitForAddPostCondition(() => {
+        if (!drawer.isConnected || !this.helpers.isVisible(drawer)) return null;
+        const button = drawer.querySelector('button[data-testid="hybrid-drawer-footer-submit-button"]');
+        // Ignore a same-named button belonging to a nested, unrelated dialog.
+        const dialog = button?.closest('[role="dialog"], .byted-modal, .arco-modal');
+        if (dialog && dialog !== drawer && drawer.contains(dialog)) return null;
+        return this.isAddPostButtonEnabled(button) ? button : null;
+      }, timeoutMs);
+    }
+
+    isAddPostButtonEnabled(button) {
+      return !!(button && button.isConnected && button.getClientRects().length > 0 &&
+        this.helpers.isVisible(button) && !button.disabled &&
+        button.getAttribute('aria-disabled') !== 'true' &&
+        !button.classList.contains('is-disabled'));
+    }
+
+    checkAddPostAbort() {
+      if (this.helpers.isAborted()) throw new Error('Automation aborted or paused by user');
+    }
+
+    checkAddPostErrors() {
+      const notices = this.helpers.queryShadowAll(
+        '[role="dialog"], .byted-modal, .arco-modal, [role="alert"], .vi-form-item__error, ' +
+        '.byted-message-error, .arco-message-error, .semi-toast-error'
+      );
+      for (const notice of notices) {
+        if (!this.helpers.isVisible(notice)) continue;
+        const text = (notice.innerText || notice.textContent || '').toLowerCase();
+        if (/(?:invalid|expired) (?:authorization )?code|(?:code|authorization) (?:is )?(?:invalid|expired)|code not found|please check your code/.test(text)) {
+          const error = new Error('Spark Ads code is invalid or expired. Please check your authorization code.');
+          error.code = 'ADD_POST_BLOCKED';
+          throw error;
+        }
+        if (/too many requests|rate limit|frequent requests|please try again later/.test(text)) {
+          const error = new Error('TikTok rate limit detected. Please wait before retrying.');
+          error.code = 'ADD_POST_BLOCKED';
+          throw error;
+        }
+      }
+    }
+
+    // Bounded, abort-aware polling only; all authorization retries belong to one loop below.
+    async waitForAddPostCondition(check, timeoutMs) {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        this.checkAddPostAbort();
+        this.checkAddPostErrors();
+        const result = check();
+        if (result) return result;
+        await this.helpers.sleep(250);
+      }
+      this.checkAddPostAbort();
+      this.checkAddPostErrors();
+      return null;
+    }
+
+    async waitForAuthorizationToFinish(drawer, timeoutMs = 15000) {
+      let settledAt = null;
+      return !!(await this.waitForAddPostCondition(() => {
+        const modalOpen = this.helpers.queryShadowAll(
+          'textarea[data-testid="multiple-input-to-tag-index-wSVv3f"], ' +
+          'button[data-testid="native-batch-authorize-index-qXWhEZ"], ' +
+          'button[data-testid="native-batch-authorize-index-wZkvDo"]'
+        ).some(el => this.helpers.isVisible(el));
+        const loading = this.helpers.queryShadowAll(
+          '.byted-spin-spinning, .arco-spin-loading, [class*="loading-indicator"], [role="progressbar"]', drawer
+        ).some(el => this.helpers.isVisible(el));
+        if (modalOpen || loading) {
+          settledAt = null;
+          return false;
+        }
+        if (settledAt === null) settledAt = Date.now();
+        return Date.now() - settledAt >= 1000;
+      }, timeoutMs));
+    }
+
+    /** Wait for every authorization control to disappear, not just the first match. */
+    async waitForModalToClose(timeoutMs = 15000) {
+      return !!(await this.waitForAddPostCondition(() => !this.helpers.queryShadowAll(
+        'textarea[data-testid="multiple-input-to-tag-index-wSVv3f"], ' +
+        'button[data-testid="native-batch-authorize-index-qXWhEZ"], ' +
+        'button[data-testid="native-batch-authorize-index-wZkvDo"]'
+      ).some(el => this.helpers.isVisible(el)), timeoutMs));
+    }
+
+    /**
+     * Verify attached creative on main page after drawer closes
+     * @param {number} [timeoutMs=10000]
+     * @returns {Promise<boolean>}
+     */
+    async verifyCreativeAttachmentOnPage(timeoutMs = 10000, authCode = '') {
+      const h = this.helpers;
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+
+        const openDrawer = h.queryShadow('.byted-drawer:not([style*="display: none"]), .arco-drawer:not([style*="display: none"]), [class*="hybrid-drawer"]:not([style*="display: none"])');
+        const isDrawerStillOpen = openDrawer && h.isVisible(openDrawer);
+
+        const header = h.queryShadow('#spp_creative_assets_header');
+        const creativeContainer = header ? (header.closest ? (header.closest('[class*="form-item"], [class*="card"], [class*="section"]') || header.parentElement) : header.parentElement) : document;
+
+        const hasMedia = h.queryShadow('img, video, [class*="video-cover"], [class*="media-cover"], [class*="post-card"], [class*="creative-item"], [data-testid*="image-list-item"], [data-testid*="media-item"], [data-testid*="post-item"]', creativeContainer);
+        const errorNotice = h.queryShadow('[class*="error-message"], [class*="form-item-explain-error"]', creativeContainer);
+        const hasCreativeError = errorNotice && h.isVisible(errorNotice) && (errorNotice.innerText || '').toLowerCase().includes('creative');
+
+        if (!isDrawerStillOpen && !hasCreativeError) {
+          if (hasMedia) {
+            return true;
+          }
+          if (header && creativeContainer) {
+            const containerText = (creativeContainer.innerText || creativeContainer.textContent || '').toLowerCase();
+            if (!containerText.includes('please upload') && !containerText.includes('add creative') && !containerText.includes('select post')) {
+              return true;
+            }
+          }
+        }
+        await h.sleep(400);
+      }
+      return false;
+    }
+
+    /** Click the exact enabled drawer button once, then verify completion without retrying authorization. */
+    async clickConfirmAndVerifyAttachment(drawer, authCode = '', confirmBtn = null) {
+      const button = confirmBtn || await this.waitForConfirmButtonEnabled(drawer);
+      this.checkAddPostAbort();
+      this.checkAddPostErrors();
+      if (!button || drawer.querySelector('button[data-testid="hybrid-drawer-footer-submit-button"]') !== button ||
+          !this.isAddPostButtonEnabled(button)) {
+        throw this.addPostVerificationError('Confirm button changed before confirmation. Verify the drawer manually.');
+      }
+      console.log('[ADD POST] Confirm enabled');
+      // The controller persists CONFIRMING before this click, so re-entry cannot repeat it.
+      button.click();
+      console.log('[ADD POST] Confirm clicked');
+      try {
+        const closed = await this.waitForAddPostCondition(
+          () => !drawer.isConnected || !this.helpers.isVisible(drawer), 10000
+        );
+        if (!closed || !await this.verifyCreativeAttachmentOnPage(10000, authCode)) {
+          throw this.addPostVerificationError('Confirm outcome is ambiguous. Verify the creative attachment manually.');
+        }
+      } catch (error) {
+        if (error.message.includes('aborted or paused')) throw error;
+        // Once clicked, any failed verification must never trigger reauthorization.
+        throw this.addPostVerificationError('Confirm outcome is ambiguous. Verify the creative attachment manually.');
+      }
+    }
+
+    addPostVerificationError(message) {
+      const error = new Error(message);
+      error.code = 'ADD_POST_NEEDS_VERIFICATION';
+      return error;
+    }
+
+    async runAddPostAuthorization(drawer, authCode) {
+      const h = this.helpers;
+      const addPost = await this.waitForAddPostCondition(() => {
+        const button = drawer.querySelector('button[data-testid="tab-mixed-post-tab-mixed-post-kQtpVD"]');
+        return this.isAddPostButtonEnabled(button) ? button : null;
+      }, 8000);
+      if (!addPost) throw new Error('Could not find enabled Add post button in the TikTok posts drawer.');
+      this.checkAddPostAbort();
+      addPost.click();
+
+      const textarea = await this.waitForAddPostCondition(() => h.queryShadowAll(
+        'textarea[data-testid="multiple-input-to-tag-index-wSVv3f"]'
+      ).find(el => h.isVisible(el)), 10000);
+      if (!textarea) throw this.addPostVerificationError('Authorization modal did not appear. Verify Add Post before continuing.');
+      const modal = textarea.closest('[role="dialog"], .byted-modal, .arco-modal, .modal, [class*="modal-content"]');
+      if (!modal || modal === drawer) throw this.addPostVerificationError('Could not identify the authorization modal.');
+      this.checkAddPostAbort();
+      h.setNativeTextareaValue(textarea, authCode);
+      console.log('[ADD POST] Authorization code entered');
+
+      const continueBtn = await this.waitForAddPostCondition(() => {
+        const button = modal.querySelector('button[data-testid="native-batch-authorize-index-wZkvDo"]');
+        return this.isAddPostButtonEnabled(button) ? button : null;
+      }, 10000);
+      if (!continueBtn) throw this.addPostVerificationError('Authorization Continue button did not become enabled.');
+      this.checkAddPostAbort();
+      continueBtn.click();
+      console.log('[ADD POST] Continue clicked');
+
+      const addPosts = await this.waitForAddPostCondition(() => {
+        // TikTok can replace the modal between Continue and Add TikTok posts.
+        return h.queryShadowAll('button[data-testid="native-batch-authorize-index-qXWhEZ"]')
+          .find(button => this.isAddPostButtonEnabled(button) &&
+            button.closest('[role="dialog"], .byted-modal, .arco-modal, .modal, [class*="modal-content"]'));
+      }, 10000);
+      if (!addPosts) throw this.addPostVerificationError('Add TikTok posts button did not become enabled.');
+      this.checkAddPostAbort();
+      addPosts.click();
+      console.log('[ADD POST] Add TikTok posts clicked');
+    }
+
+    /** One authorization retry loop. Only the exact drawer Confirm state decides whether to retry. */
+    async attachSparkAdsPostWithRetry(authCode, campaignIndex = 1) {
+      const MAX_ATTEMPTS = 5;
+      const h = this.helpers;
+      if (!authCode || typeof authCode !== 'string' || !authCode.trim()) {
+        throw new Error('Spark Ads authorization code is missing or empty.');
+      }
+      if (this._isAddPostRunning) throw new Error('Concurrent Add Post operation detected.');
+      this._isAddPostRunning = true;
+      try {
+        this.checkAddPostAbort();
+        const job = await this.storage.getJobState();
+        const sameCampaign = job.addPostRunId === job.runId && job.addPostCampaignIndex === campaignIndex;
+        // Migrate an existing unscoped counter without granting extra attempts.
+        const legacyCounter = job.addPostCampaignIndex == null && job.currentCampaignIndex === campaignIndex;
+        let attemptCount = sameCampaign || legacyCounter ? Number(job.addPostAttemptCount) || 0 : 0;
+        let phase = sameCampaign ? job.addPostPhase || 'READY' : 'READY';
+        await this.storage.updateJobState({
+          addPostRunId: job.runId,
+          addPostCampaignIndex: campaignIndex,
+          addPostAttemptCount: attemptCount,
+          addPostPhase: phase
+        });
+        if (phase === 'COMPLETED') return { success: true, attempts: attemptCount, attached: true };
+        if (['CONFIRMING', 'VERIFY_REQUIRED', 'AUTHORIZING', 'BLOCKED'].includes(phase)) {
+          throw this.addPostVerificationError('Previous Add Post operation requires manual verification before continuing.');
+        }
+
+        const pending = phase === 'PROCESSING' || phase === 'AWAITING_CONFIRM';
+        if (attemptCount < MAX_ATTEMPTS || pending) {
+          // Navigation remains owned by the existing campaign workflow.
+          const drawer = await this.waitForCreativeAssetsDrawer(8000);
+          if (!drawer) throw this.addPostVerificationError('Active TikTok posts drawer is unavailable.');
+          await this.ensureTikTokPostsTabActive(drawer);
+
+          for (let attempt = pending ? attemptCount : attemptCount + 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            this.checkAddPostAbort();
+            // Never start another operation while an earlier modal or loading indicator is active.
+            if (!await this.waitForAuthorizationToFinish(drawer)) {
+              throw this.addPostVerificationError('Authorization is still processing. Verify Add Post before retrying.');
+            }
+            if (phase !== 'PROCESSING' && phase !== 'AWAITING_CONFIRM') {
+              await this.storage.updateJobState({
+                addPostAttemptCount: attempt,
+                addPostPhase: 'AUTHORIZING',
+                stepDescription: `[#${campaignIndex}] Add Post attempt ${attempt}/${MAX_ATTEMPTS}`
+              });
+              console.log(`[ADD POST] Attempt ${attempt}/${MAX_ATTEMPTS}`);
+              this.checkAddPostAbort();
+              await this.runAddPostAuthorization(drawer, authCode);
+              await this.storage.updateJobState({ addPostPhase: 'PROCESSING' });
+              if (!await this.waitForAuthorizationToFinish(drawer)) {
+                throw this.addPostVerificationError('Authorization is still processing. Verify Add Post before retrying.');
+              }
+            }
+            await this.storage.updateJobState({ addPostPhase: 'AWAITING_CONFIRM' });
+            console.log('[ADD POST] Waiting for Confirm button');
+            const confirm = await this.waitForConfirmButtonEnabled(drawer);
+            if (confirm) {
+              await this.storage.updateJobState({ addPostPhase: 'CONFIRMING' });
+              await this.clickConfirmAndVerifyAttachment(drawer, authCode, confirm);
+              await this.storage.updateJobState({ addPostPhase: 'COMPLETED' });
+              console.log('[ADD POST] Authorization flow completed');
+              return { success: true, attempts: attempt, attached: true };
+            }
+            console.log('[ADD POST] Confirm not enabled');
+            phase = 'READY';
+            await this.storage.updateJobState({ addPostPhase: phase });
+            if (attempt < MAX_ATTEMPTS) {
+              await h.sleep(1500);
+              console.log('[ADD POST] Restarting Add Post process');
+            }
+          }
+        }
+        console.error('[ADD POST ERROR] Confirm unavailable after 5 attempts');
+        const error = new Error('Confirm button did not become enabled after 5 Add Post attempts');
+        error.code = 'POST_RETRY_EXHAUSTED';
+        await this.storage.updateJobState({
+          status: 'POST_RETRY_EXHAUSTED', addPostPhase: 'EXHAUSTED',
+          lastError: error.message, stepDescription: error.message
+        });
+        throw error;
+      } catch (error) {
+        if (error.code === 'ADD_POST_NEEDS_VERIFICATION') {
+          await this.storage.updateJobState({
+            status: 'NEEDS_VERIFICATION', addPostPhase: 'VERIFY_REQUIRED',
+            lastError: error.message, stepDescription: error.message
+          });
+        } else if (error.code === 'ADD_POST_BLOCKED') {
+          await this.storage.updateJobState({ addPostPhase: 'BLOCKED', lastError: error.message });
+        }
+        throw error;
+      } finally {
+        this._isAddPostRunning = false;
+      }
     }
 
     get storage() {

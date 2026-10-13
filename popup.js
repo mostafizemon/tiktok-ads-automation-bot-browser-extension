@@ -300,6 +300,9 @@
     } else if (status === 'NEEDS_VERIFICATION') {
       elements.botStateBadge.textContent = 'NEEDS VERIFICATION';
       elements.botStateBadge.className = 'badge badge-needs_verification';
+    } else if (status === 'POST_RETRY_EXHAUSTED') {
+      elements.botStateBadge.textContent = 'POST RETRY EXHAUSTED';
+      elements.botStateBadge.className = 'badge badge-failed';
     } else {
       elements.botStateBadge.textContent = status;
       elements.botStateBadge.className = `badge badge-${status.toLowerCase()}`;

@@ -25,7 +25,8 @@
     COMPLETED: 'COMPLETED',
     FAILED: 'FAILED',
     NEEDS_ATTENTION: 'NEEDS_ATTENTION',
-    NEEDS_VERIFICATION: 'NEEDS_VERIFICATION'
+    NEEDS_VERIFICATION: 'NEEDS_VERIFICATION',
+    POST_RETRY_EXHAUSTED: 'POST_RETRY_EXHAUSTED'
   };
 
   const WORKFLOW_STEPS = {
@@ -46,7 +47,8 @@
     REFRESH_CAMPAIGNS: 'REFRESH_CAMPAIGNS',
     VERIFY_SUBMISSION: 'VERIFY_SUBMISSION',
     READY_FOR_NEXT_CAMPAIGN: 'READY_FOR_NEXT_CAMPAIGN',
-    TEST_COMPLETED: 'TEST_COMPLETED'
+    TEST_COMPLETED: 'TEST_COMPLETED',
+    POST_RETRY_EXHAUSTED: 'POST_RETRY_EXHAUSTED'
   };
 
   class AutomationRunner {
@@ -111,6 +113,14 @@
       this.activeJobId = jobState.runId;
 
       this.log(`Runner restored state: ${this.currentState} (Step: ${jobState.currentStep})`);
+
+      if (this.currentState === RUNNER_STATES.POST_RETRY_EXHAUSTED) {
+        console.log('[POST ERROR] Maximum 5 attempts reached');
+        console.log('[POST ERROR] No further authorization retries allowed');
+        console.log('[RUNNER] Add Post retry exhausted');
+        this.isProcessingLock = false;
+        return;
+      }
 
       // Handle reload recovery checkpoints (Task 7)
       if (this.currentState === RUNNER_STATES.RUNNING) {
@@ -213,7 +223,8 @@
         submissionStatus: 'NONE',
         submissionEvidence: null,
         refreshCheckpoint: 'NONE',
-        lastPublishClickTime: null
+        lastPublishClickTime: null,
+        addPostAttemptCount: 0
       });
 
       this.diag('START_AUTOMATION', `Job [${this.activeJobId}] launched`, {
@@ -295,6 +306,26 @@
         // Failure or Ambiguous Outcome Handling
         if (!result.success) {
           this.warn(`Campaign ${currentIndex} did not complete: ${result.error}`);
+
+          if (result.addPostVerification) {
+            this.currentState = RUNNER_STATES.NEEDS_VERIFICATION;
+            this.isProcessingLock = false;
+            return;
+          }
+
+          if (result.exhausted || result.error?.includes('5 attempts') || (await this.storage?.getJobState())?.status === RUNNER_STATES.POST_RETRY_EXHAUSTED) {
+            console.log('[POST ERROR] Maximum 5 attempts reached');
+            console.log('[POST ERROR] No further authorization retries allowed');
+            console.log('[RUNNER] Add Post retry exhausted');
+            await this.storage?.updateJobState({
+              status: RUNNER_STATES.POST_RETRY_EXHAUSTED,
+              lastError: 'Add Post failed after 5 attempts. No further retries allowed.',
+              stepDescription: 'Add Post failed after 5 attempts'
+            });
+            this.currentState = RUNNER_STATES.POST_RETRY_EXHAUSTED;
+            this.isProcessingLock = false;
+            return;
+          }
 
           if (result.ambiguous) {
             console.log('[VERIFY] Submission could not be confirmed');
@@ -547,7 +578,8 @@
         await this.storage?.updateJobState({
           currentCampaignIndex: nextIndex,
           currentStep: WORKFLOW_STEPS.CLICK_CREATE,
-          stepDescription: `Starting Campaign ${nextIndex} of ${totalCampaigns}`
+          stepDescription: `Starting Campaign ${nextIndex} of ${totalCampaigns}`,
+          addPostAttemptCount: 0
         });
 
         // Continue loop with next campaign, ensuring config includes campaignCount = totalCampaigns
@@ -579,6 +611,24 @@
     async executeSingleCampaign(campaignIndex, config) {
       const c = this.campaign;
       const h = this.helpers;
+
+      // Enforce hard exhaustion limit before any step dispatch
+      const currentJob = await this.storage?.getJobState();
+      if ((currentJob?.addPostCampaignIndex == null ||
+           (currentJob.addPostRunId === currentJob.runId && currentJob.addPostCampaignIndex === campaignIndex)) &&
+          (currentJob?.addPostAttemptCount || 0) >= 5 &&
+          !['PROCESSING', 'AWAITING_CONFIRM', 'CONFIRMING', 'COMPLETED', 'VERIFY_REQUIRED'].includes(currentJob?.addPostPhase)) {
+        console.log('[POST ERROR] Maximum 5 attempts reached');
+        console.log('[POST ERROR] No further authorization retries allowed');
+        console.log('[RUNNER] Add Post retry exhausted');
+        await this.storage?.updateJobState({
+          status: RUNNER_STATES.POST_RETRY_EXHAUSTED,
+          lastError: 'Add Post failed after 5 attempts. No further retries allowed.',
+          stepDescription: 'Add Post failed after 5 attempts'
+        });
+        this.currentState = RUNNER_STATES.POST_RETRY_EXHAUSTED;
+        return { success: false, error: 'Add Post failed after 5 attempts', exhausted: true };
+      }
 
       try {
         // Step 1: Click Create
@@ -637,40 +687,14 @@
         await c.openCreativeAssetsDrawer();
         await h.sleep(1000);
 
-        // Step 7: Select TikTok posts tab -> Add post
+        // Step 7-10: Attach TikTok Spark Ads post with automatic retry & verification
         if (this.shouldAbort) return { success: false, aborted: true, error: 'Aborted' };
+
         await this.storage?.updateJobState({
           currentStep: WORKFLOW_STEPS.SELECT_TIKTOK_POSTS,
-          stepDescription: `[#${campaignIndex}] Selecting TikTok posts tab`
+          stepDescription: `[#${campaignIndex}] Attaching TikTok post (Spark Ads)...`
         });
-        await c.selectTikTokPostsTabAndClickAdd();
-        await h.sleep(1000);
-
-        // Step 8: Input Spark Ads Auth Code -> Continue
-        if (this.shouldAbort) return { success: false, aborted: true, error: 'Aborted' };
-        await this.storage?.updateJobState({
-          currentStep: WORKFLOW_STEPS.AUTH_CODE_INPUT,
-          stepDescription: `[#${campaignIndex}] Inputting Spark Ads auth code`
-        });
-        await c.inputSparkAdsCodeAndContinue(config.authCode);
-        await h.sleep(1000);
-
-        // Step 9: Click Add TikTok posts
-        if (this.shouldAbort) return { success: false, aborted: true, error: 'Aborted' };
-        await this.storage?.updateJobState({
-          currentStep: WORKFLOW_STEPS.ADD_POSTS_CONFIRM,
-          stepDescription: `[#${campaignIndex}] Authorizing and adding TikTok posts`
-        });
-        await c.clickAddTikTokPosts();
-        await h.sleep(1500);
-
-        // Step 10: Confirm Drawer
-        if (this.shouldAbort) return { success: false, aborted: true, error: 'Aborted' };
-        await this.storage?.updateJobState({
-          currentStep: WORKFLOW_STEPS.CONFIRM_DRAWER,
-          stepDescription: `[#${campaignIndex}] Confirming post in drawer`
-        });
-        await c.verifyPostAndClickConfirm();
+        await c.attachSparkAdsPostWithRetry(config.authCode, campaignIndex);
         await h.sleep(1500);
 
         // Step 11: Final Publishing Step
@@ -702,6 +726,22 @@
         if (err.message && err.message.includes('aborted or paused')) {
           this.log(`Campaign ${campaignIndex} was paused/aborted.`);
           return { success: false, aborted: true, error: err.message };
+        }
+        if (err.code === 'ADD_POST_NEEDS_VERIFICATION') {
+          this.currentState = RUNNER_STATES.NEEDS_VERIFICATION;
+          return { success: false, error: err.message, addPostVerification: true };
+        }
+        if (err.code === 'POST_RETRY_EXHAUSTED' || (err.message && err.message.includes('5 attempts'))) {
+          console.log('[POST ERROR] Maximum 5 attempts reached');
+          console.log('[POST ERROR] No further authorization retries allowed');
+          console.log('[RUNNER] Add Post retry exhausted');
+          await this.storage?.updateJobState({
+            status: RUNNER_STATES.POST_RETRY_EXHAUSTED,
+            lastError: 'Add Post failed after 5 attempts. No further retries allowed.',
+            stepDescription: 'Add Post failed after 5 attempts'
+          });
+          this.currentState = RUNNER_STATES.POST_RETRY_EXHAUSTED;
+          return { success: false, error: 'Add Post failed after 5 attempts', exhausted: true };
         }
         this.error(`Error during Campaign ${campaignIndex}:`, err);
         return { success: false, error: err.message };

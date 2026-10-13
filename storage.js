@@ -47,7 +47,11 @@
     submissionStatus: 'NONE', // 'NONE' | 'SUBMISSION_PENDING' | 'SUBMITTED' | 'FAILED' | 'NEEDS_VERIFICATION'
     submissionEvidence: null,
     refreshCheckpoint: 'NONE', // 'NONE' | 'REFRESH_IN_PROGRESS' | 'REFRESH_COMPLETED'
-    lastPublishClickTime: null
+    lastPublishClickTime: null,
+    addPostAttemptCount: 0,
+    addPostRunId: null,
+    addPostCampaignIndex: null,
+    addPostPhase: 'READY'
   };
 
   const StorageService = {
