@@ -679,14 +679,19 @@
         await c.inputWebsiteUrl(config.websiteUrl);
         await h.sleep(1000);
 
-        // Step 5.5: Configure Call to Action
+        // Step 5.5: Configure Call to Action (skipped only for legacy configs
+        // without a CTA; the popup requires a CTA for all new runs).
         if (this.shouldAbort) return { success: false, aborted: true, error: 'Aborted' };
-        await this.storage?.updateJobState({
-          currentStep: WORKFLOW_STEPS.CONFIGURE_CTA,
-          stepDescription: `[#${campaignIndex}] Configuring Call to Action`
-        });
-        await c.configureCallToAction(config.callToAction);
-        await h.sleep(1000);
+        if (config.callToAction && String(config.callToAction).trim()) {
+          await this.storage?.updateJobState({
+            currentStep: WORKFLOW_STEPS.CONFIGURE_CTA,
+            stepDescription: `[#${campaignIndex}] Configuring Call to Action`
+          });
+          await c.configureCallToAction(config.callToAction);
+          await h.sleep(1000);
+        } else {
+          console.log('[CTA] No Call to Action in config; skipping CTA step (legacy config)');
+        }
 
         // Step 6: Creative Assets -> Click Add
         if (this.shouldAbort) return { success: false, aborted: true, error: 'Aborted' };
