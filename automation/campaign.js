@@ -1876,6 +1876,304 @@
     }
 
     /**
+     * Step 5.5: Configure Call to Action (CTA)
+     * Section: #fieldRenderer-callToActionAssetList
+     * Title: "Call to action text"
+     * Editor: ks-select-923 with nested Shadow DOM
+     * Clear All: .value-field__clear[part="suffixIcon"] inside ks-value-field-923
+     * Options: li.menu-item-base with ks-checkbox-923, label via named slots
+     * @param {string} callToAction
+     */
+    async configureCallToAction(callToAction) {
+      const h = this.helpers;
+      const stepName = 'CONFIGURE_CTA';
+      this.diag(stepName, `Configuring Call to Action: "${callToAction}"`);
+
+      if (!callToAction || typeof callToAction !== 'string' || !callToAction.trim()) {
+        throw new Error('Call to Action is required but not configured.');
+      }
+
+      const ctaValue = callToAction.trim();
+
+      // 1. Locate the CTA section container
+      const ctaSection = h.queryShadow('#fieldRenderer-callToActionAssetList');
+      if (!ctaSection || !h.isVisible(ctaSection)) {
+        this.diag(stepName, 'Call to action section not found', {
+          elementMissing: '#fieldRenderer-callToActionAssetList',
+          error: 'CTA section not found on page'
+        });
+        throw new Error('Could not find Call to action text section (#fieldRenderer-callToActionAssetList).');
+      }
+
+      this.diag(stepName, 'Call to action section found', {
+        elementFound: '#fieldRenderer-callToActionAssetList'
+      });
+
+      // 2. Find and click the Edit button inside the CTA section
+      // Selector: [data-testid="lego-hybrid-section-item-operation"]
+      // Click target: host.shadowRoot.querySelector('button[part="base"]')
+      let editButtonHost = h.queryShadow('[data-testid="lego-hybrid-section-item-operation"]', ctaSection);
+      let editorOpened = false;
+
+      if (editButtonHost && editButtonHost.shadowRoot) {
+        const editButton = editButtonHost.shadowRoot.querySelector('button[part="base"]');
+        if (editButton && h.isVisible(editButton)) {
+          this.diag(stepName, 'Opening CTA editor', {
+            elementFound: '[data-testid="lego-hybrid-section-item-operation"] button[part="base"]'
+          });
+          h.safeClick(editButton, 'CTA Edit button');
+          await h.sleep(800);
+          editorOpened = true;
+        }
+      }
+
+      // If no edit button found, the editor might already be open
+      if (!editorOpened) {
+        this.diag(stepName, 'CTA editor appears to be already open; skipping Edit click');
+      }
+
+      // 3. Wait for the CTA select component (ks-select-923) to be ready within the section
+      const ctaSelectHost = await h.waitForVisibleElement('ks-select-923', 8000, ctaSection);
+      if (!ctaSelectHost) {
+        this.diag(stepName, 'CTA select component (ks-select-923) not found', {
+          elementMissing: 'ks-select-923',
+          error: 'CTA dropdown editor not available'
+        });
+        throw new Error('CTA select component (ks-select-923) not found after opening editor.');
+      }
+
+      // 4. Find the Clear All button inside the nested ks-value-field-923 shadow DOM
+      // Structural selector: .value-field__clear[part="suffixIcon"]
+      const valueFieldHost = h.queryShadow('ks-value-field-923', ctaSelectHost);
+      let clearAllBtn = null;
+
+      if (valueFieldHost && valueFieldHost.shadowRoot) {
+        clearAllBtn = valueFieldHost.shadowRoot.querySelector('.value-field__clear[part="suffixIcon"]');
+      }
+
+      if (!clearAllBtn) {
+        // Fallback: search deeper in ctaSelectHost shadow roots
+        const allValueFields = h.queryShadowAll('ks-value-field-923', ctaSelectHost);
+        for (const vf of allValueFields) {
+          if (vf.shadowRoot) {
+            const btn = vf.shadowRoot.querySelector('.value-field__clear[part="suffixIcon"]');
+            if (btn && h.isVisible(btn)) {
+              clearAllBtn = btn;
+              break;
+            }
+          }
+        }
+      }
+
+      // 5. Click Clear All to remove all existing selections
+      if (clearAllBtn && h.isVisible(clearAllBtn)) {
+        this.diag(stepName, 'Clearing existing CTA selections', {
+          elementFound: '.value-field__clear[part="suffixIcon"]'
+        });
+        h.safeClick(clearAllBtn, 'CTA Clear All button');
+        await h.sleep(600);
+
+        // Verify all selections cleared (no tagged items visible)
+        const tagsAfterClear = h.queryShadowAll('ks-tag-923.value-field__tagged__tag-item', ctaSelectHost);
+        let allCleared = true;
+        for (const tag of tagsAfterClear) {
+          if (h.isVisible(tag)) {
+            allCleared = false;
+            break;
+          }
+        }
+
+        if (!allCleared) {
+          // Fallback: remove tags individually
+          this.diag(stepName, 'Clear All did not remove all tags; attempting individual removal');
+          for (const tag of tagsAfterClear) {
+            if (!h.isVisible(tag)) continue;
+            let closeBtn = null;
+            if (tag.shadowRoot) {
+              closeBtn = tag.shadowRoot.querySelector('[part="closeIcon"], [aria-label*="Remove"], [class*="close"]');
+            }
+            if (!closeBtn) {
+              closeBtn = tag.querySelector('[part="closeIcon"], [aria-label*="Remove"], [class*="close"]');
+            }
+            if (closeBtn) {
+              h.safeClick(closeBtn, 'Individual CTA tag close');
+              await h.sleep(300);
+            }
+          }
+        }
+
+        this.diag(stepName, 'Existing selections cleared');
+      } else {
+        this.diag(stepName, 'Clear All button not found or not visible', {
+          error: 'Failed to clear existing selections'
+        });
+        throw new Error('Failed to clear existing CTA selections: Clear All button not found.');
+      }
+
+      // 6. Open the CTA dropdown if closed
+      // The dropdown trigger is typically the ks-select-923 host itself or a button inside it
+      let dropdownTrigger = ctaSelectHost;
+      if (ctaSelectHost.shadowRoot) {
+        const innerTrigger = ctaSelectHost.shadowRoot.querySelector('button, [role="combobox"], [part="trigger"], [class*="trigger"]');
+        if (innerTrigger) dropdownTrigger = innerTrigger;
+      }
+
+      // Check if dropdown is already open by looking for the menu/popover
+      let dropdownOpen = false;
+      const menuCheck = h.queryShadowAll('[class*="menu"], [class*="dropdown"], [role="listbox"], ks-menu-923', ctaSection);
+      for (const m of menuCheck) {
+        if (h.isVisible(m)) {
+          dropdownOpen = true;
+          break;
+        }
+      }
+
+      if (!dropdownOpen) {
+        this.diag(stepName, 'Opening CTA dropdown');
+        h.safeClick(dropdownTrigger, 'CTA dropdown trigger');
+        await h.sleep(600);
+      }
+
+      // 7. Find the option matching the requested CTA via named slots
+      // Options are li.menu-item-base with ks-checkbox-923
+      // Label text comes from slotted div with slot="slot-item-label-..."
+      const menuItems = h.queryShadowAll('li.menu-item-base, [role="option"]', ctaSection);
+      let matchedItem = null;
+
+      for (const item of menuItems) {
+        if (!h.isVisible(item)) continue;
+
+        // Find the slotted label element
+        let labelText = '';
+        const labelDiv = item.querySelector('.menu-item-base__content--text--label, [class*="content--text--label"]');
+        if (labelDiv) {
+          const slot = labelDiv.querySelector('slot');
+          if (slot) {
+            // Get the slotted content
+            const assigned = slot.assignedElements({ flatten: true });
+            for (const assignedEl of assigned) {
+              labelText = (assignedEl.innerText || assignedEl.textContent || '').trim();
+              if (labelText) break;
+            }
+          }
+          if (!labelText) {
+            labelText = (labelDiv.innerText || labelDiv.textContent || '').trim();
+          }
+        }
+
+        // Fallback: check for ks-text-923 inside
+        if (!labelText) {
+          const ksText = item.querySelector('ks-text-923');
+          if (ksText) {
+            labelText = (ksText.innerText || ksText.textContent || '').trim();
+          }
+        }
+
+        // Final fallback: use item text but be careful
+        if (!labelText) {
+          labelText = (item.innerText || item.textContent || '').trim();
+        }
+
+        // Normalize comparison
+        if (labelText === ctaValue) {
+          matchedItem = item;
+          break;
+        }
+      }
+
+      if (!matchedItem) {
+        this.diag(stepName, `Requested CTA "${ctaValue}" not available in dropdown`, {
+          elementMissing: `li.menu-item-base with label "${ctaValue}"`,
+          error: 'Requested CTA not available'
+        });
+        throw new Error(`Requested CTA "${ctaValue}" is not available in the current advertiser account.`);
+      }
+
+      // 8. Click the matched option
+      this.diag(stepName, `Selecting "${ctaValue}"`, {
+        elementFound: `li.menu-item-base with label "${ctaValue}"`
+      });
+      h.safeClick(matchedItem, `CTA option: ${ctaValue}`);
+      await h.sleep(600);
+
+      // 9. Verify the selection: ks-checkbox-923 aria-checked="true"
+      const checkbox = matchedItem.querySelector('ks-checkbox-923');
+      let selectionVerified = false;
+
+      if (checkbox) {
+        const verifyStart = Date.now();
+        while (Date.now() - verifyStart < 4000) {
+          if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+          if (checkbox.getAttribute('aria-checked') === 'true') {
+            selectionVerified = true;
+            break;
+          }
+          await h.sleep(200);
+        }
+      } else {
+        // If no checkbox, assume click worked
+        selectionVerified = true;
+      }
+
+      if (!selectionVerified) {
+        this.diag(stepName, `Failed to verify selection of "${ctaValue}"`, {
+          error: 'CTA selection verification failed'
+        });
+        throw new Error(`Failed to verify selection of "${ctaValue}".`);
+      }
+
+      // 10. Verify all OTHER options are unchecked
+      let othersUnchecked = true;
+      for (const item of menuItems) {
+        if (item === matchedItem) continue;
+        if (!h.isVisible(item)) continue;
+        const otherCheckbox = item.querySelector('ks-checkbox-923');
+        if (otherCheckbox && otherCheckbox.getAttribute('aria-checked') === 'true') {
+          othersUnchecked = false;
+          break;
+        }
+      }
+
+      if (!othersUnchecked) {
+        this.diag(stepName, 'Other CTA options remain selected', {
+          error: 'CTA selection verification failed - multiple selections'
+        });
+        throw new Error('Multiple CTA options remain selected after selection.');
+      }
+
+      // 11. Verify the selected CTA appears in the tagged-value field
+      const taggedItems = h.queryShadowAll('ks-tag-923.value-field__tagged__tag-item', ctaSelectHost);
+      let taggedFound = false;
+      for (const tag of taggedItems) {
+        if (!h.isVisible(tag)) continue;
+        const tagText = (tag.innerText || tag.textContent || '').trim();
+        if (tagText === ctaValue) {
+          taggedFound = true;
+          break;
+        }
+      }
+
+      if (!taggedFound) {
+        this.diag(stepName, `Selected CTA "${ctaValue}" not reflected in tagged value field`, {
+          error: 'CTA selection verification failed - tag not shown'
+        });
+        throw new Error(`Selected CTA "${ctaValue}" not reflected in tagged value field.`);
+      }
+
+      // 12. Close dropdown by clicking outside
+      const neutralArea = h.queryShadow('#fieldRenderer-callToActionAssetList h3, #fieldRenderer-callToActionAssetList h4, #fieldRenderer-callToActionAssetList .section-title, h1, h2, h3') || document.body;
+      if (neutralArea) {
+        neutralArea.click();
+        await h.sleep(300);
+      }
+
+      this.diag(stepName, 'CTA configuration completed', {
+        verification: `Exactly one CTA selected: ${ctaValue}`
+      });
+      return true;
+    }
+
+    /**
      * Step 6: Creative Assets -> Click Add
      */
     async openCreativeAssetsDrawer() {

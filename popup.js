@@ -13,7 +13,7 @@
   // Selected countries state
   let selectedCountries = ['United States'];
 
-  // DOM Elements
+// DOM Elements
   const elements = {
     form: document.getElementById('configForm'),
     websiteUrl: document.getElementById('websiteUrl'),
@@ -21,6 +21,7 @@
     campaignCount: document.getElementById('campaignCount'),
     authCode: document.getElementById('authCode'),
     toggleAuthCodeVisibility: document.getElementById('toggleAuthCodeVisibility'),
+    callToAction: document.getElementById('callToAction'),
 
     // Countries
     countriesContainer: document.getElementById('countriesContainer'),
@@ -59,6 +60,7 @@
     summaryCount: document.getElementById('summaryCount'),
     summaryBudget: document.getElementById('summaryBudget'),
     summaryCountries: document.getElementById('summaryCountries'),
+    summaryCallToAction: document.getElementById('summaryCallToAction'),
     summaryExposure: document.getElementById('summaryExposure'),
     summaryMode: document.getElementById('summaryMode'),
     cancelConfirmBtn: document.getElementById('cancelConfirmBtn'),
@@ -99,6 +101,7 @@
     const campaignCount = isNaN(campaignCountRaw) || campaignCountRaw < 1 ? 1 : campaignCountRaw;
     const liveMode = elements.modeLiveRadio.checked;
     const authCode = (elements.authCode.value || '').trim();
+    const callToAction = (elements.callToAction.value || '').trim();
 
     // Save regular configuration to chrome.storage.local (and authCode to chrome.storage.session)
     await window.StorageService.saveConfig({
@@ -107,7 +110,8 @@
       campaignCount,
       targetCountries: [...selectedCountries],
       liveMode,
-      authCode
+      authCode,
+      callToAction
     });
 
     log('Auto-saved configuration to profile storage');
@@ -261,6 +265,9 @@
       if (document.activeElement !== elements.authCode && config.authCode !== undefined) {
         elements.authCode.value = config.authCode;
       }
+      if (document.activeElement !== elements.callToAction && config.callToAction !== undefined) {
+        elements.callToAction.value = config.callToAction;
+      }
 
       if (Array.isArray(config.targetCountries) && config.targetCountries.length > 0) {
         selectedCountries = [...config.targetCountries];
@@ -399,9 +406,10 @@
     const dailyBudget = elements.dailyBudget.value.trim();
     const campaignCount = elements.campaignCount.value.trim();
     const authCode = elements.authCode.value.trim();
+    const callToAction = elements.callToAction.value.trim();
     const liveMode = elements.modeLiveRadio.checked;
 
-    [elements.websiteUrl, elements.dailyBudget, elements.campaignCount, elements.authCode]
+    [elements.websiteUrl, elements.dailyBudget, elements.campaignCount, elements.authCode, elements.callToAction]
       .forEach(inp => inp.classList.remove('is-invalid'));
 
     // 1. Website URL
@@ -449,6 +457,12 @@
       return { isValid: false, error: 'Please enter the TikTok Spark Ads Post Authorization Code.' };
     }
 
+    // 6. Call to Action
+    if (!callToAction) {
+      elements.callToAction.classList.add('is-invalid');
+      return { isValid: false, error: 'Please select a Call to Action.' };
+    }
+
     return {
       isValid: true,
       values: {
@@ -457,6 +471,7 @@
         campaignCount: countNum,
         targetCountries: [...selectedCountries],
         authCode,
+        callToAction,
         liveMode
       }
     };
@@ -531,6 +546,7 @@
     elements.summaryCount.textContent = values.campaignCount;
     elements.summaryBudget.textContent = `$${values.dailyBudget}`;
     elements.summaryCountries.textContent = values.targetCountries.join(', ');
+    elements.summaryCallToAction.textContent = values.callToAction;
     elements.summaryExposure.textContent = `$${totalExposure} / day`;
     elements.summaryMode.textContent = values.liveMode ? 'LIVE MODE (Publishing Enabled)' : 'TEST MODE (Safe: No Publish)';
     elements.summaryMode.className = values.liveMode ? 'text-danger' : 'text-accent';

@@ -23,7 +23,8 @@
     targetCountries: ['United States'],
     authCode: '',
     campaignCount: 1,
-    liveMode: false // Default to Test Mode for safety
+    liveMode: false, // Default to Test Mode for safety
+    callToAction: '' // Default CTA - required field
   };
 
   const DEFAULT_JOB_STATE = {

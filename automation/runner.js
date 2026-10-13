@@ -35,6 +35,7 @@
     OBJECTIVE_AND_BUDGET: 'OBJECTIVE_AND_BUDGET',
     DEMOGRAPHICS_COUNTRIES: 'DEMOGRAPHICS_COUNTRIES',
     WEBSITE_URL: 'WEBSITE_URL',
+    CONFIGURE_CTA: 'CONFIGURE_CTA',
     OPEN_ASSETS_DRAWER: 'OPEN_ASSETS_DRAWER',
     SELECT_TIKTOK_POSTS: 'SELECT_TIKTOK_POSTS',
     AUTH_CODE_INPUT: 'AUTH_CODE_INPUT',
@@ -676,6 +677,15 @@
           stepDescription: `[#${campaignIndex}] Setting Website URL`
         });
         await c.inputWebsiteUrl(config.websiteUrl);
+        await h.sleep(1000);
+
+        // Step 5.5: Configure Call to Action
+        if (this.shouldAbort) return { success: false, aborted: true, error: 'Aborted' };
+        await this.storage?.updateJobState({
+          currentStep: WORKFLOW_STEPS.CONFIGURE_CTA,
+          stepDescription: `[#${campaignIndex}] Configuring Call to Action`
+        });
+        await c.configureCallToAction(config.callToAction);
         await h.sleep(1000);
 
         // Step 6: Creative Assets -> Click Add
