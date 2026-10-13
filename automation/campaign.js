@@ -475,17 +475,107 @@
 
       // 1-5. Find and verify Campaign Budget radio selection
       await this.ensureCampaignBudgetRadioSelected();
+      console.log('[BUDGET] Campaign budget selected');
+      await this.ensureOptionalCustomBudgetSelected();
 
       // 6-8. Find Budget Mode dropdown and ensure Daily mode is selected
       await this.ensureDailyBudgetMode();
 
       // 9-13. Traverse TWO nested open Shadow DOM roots to locate budget input
       const budgetInput = await this.locateNestedShadowBudgetInput();
+      console.log('[BUDGET] Daily budget input ready');
 
       // 14-23. Set budget value, verify numeric value, inspect TikTok validation errors
       await this.enterAndVerifyBudgetValue(budgetInput, budgetFormatted);
+      console.log('[BUDGET] Daily budget entered');
+      console.log('[BUDGET] Budget verified');
 
       return true;
+    }
+
+    /** Scope optional radio discovery to the local budget section, never the page. */
+    findCustomBudgetOption() {
+      const h = this.helpers;
+      const campaign = this.findCampaignBudgetRadio();
+      const parent = node => node.parentElement || node.getRootNode()?.host;
+      let section = null;
+      for (let node = campaign && parent(campaign); node; node = parent(node)) {
+        if (node.matches('body, html, form')) break;
+        const budgetAnchor = h.queryShadow(
+          '[data-testid="create_campaign_CBO_daily_budget"], [data-testid="campaign_settings_budgetCboSelect"], #cbo-daily-budget', node
+        );
+        if (budgetAnchor || node.matches('section, fieldset, [role="group"]')) {
+          section = node;
+          break;
+        }
+      }
+      if (!section) return null;
+      const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
+      // Prefer the supplied radiogroup structure; its generated test ID is not stable.
+      const groups = h.queryShadowAll('[role="radiogroup"]', section).filter(group => h.isVisible(group));
+      const options = groups.length
+        ? groups.flatMap(group => h.queryShadowAll('label[role="radio"]', group))
+        : h.queryShadowAll('[role="radio"], input[type="radio"]', section);
+      for (const radio of options) {
+        const label = radio.closest('label');
+        const labels = Array.from(radio.labels || []);
+        const root = radio.getRootNode();
+        const labelledBy = (radio.getAttribute('aria-labelledby') || '').split(/\s+/)
+          .map(id => root.getElementById?.(id)?.textContent || '').join(' ');
+        const name = radio.getAttribute('aria-label') || labelledBy.trim() ||
+          labels.map(item => item.textContent).join(' ') || label?.textContent || radio.textContent;
+        const target = label || labels.find(item => h.isVisible(item)) || radio;
+        if (normalize(name) !== 'Custom budget' || !h.isVisible(target)) continue;
+        const controls = [target, radio, ...h.queryShadowAll('input[type="radio"], [role="radio"]', target)];
+        return {
+          target,
+          selected: target.matches('label[role="radio"]')
+            ? target.getAttribute('aria-checked') === 'true' || target.classList.contains('is-checked')
+            : controls.some(node => node.checked === true || this.isRadioSelected(node)),
+          disabled: controls.some(node => node.disabled === true || node.matches(':disabled') ||
+            (node.hasAttribute('disabled') && node.getAttribute('disabled') !== 'false') ||
+            node.getAttribute('aria-disabled') === 'true' ||
+            node.classList.contains('is-disabled'))
+        };
+      }
+      return null;
+    }
+
+    async ensureOptionalCustomBudgetSelected(timeoutMs = 5000) {
+      const h = this.helpers;
+      const started = Date.now();
+      let detected = false;
+      let clicked = false;
+      // Allow optional controls to render even when the old Daily input is still visible.
+      while (Date.now() - started < timeoutMs) {
+        if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+        const option = this.findCustomBudgetOption();
+        if (option) {
+          if (!detected) console.log('[BUDGET] Custom budget radio detected');
+          detected = true;
+          if (option.selected) {
+            console.log(clicked ? '[BUDGET] Custom budget selected' : '[BUDGET] Custom budget already selected');
+            console.log('[BUDGET] Continuing to daily budget input');
+            return;
+          }
+          if (!option.disabled && !clicked) {
+            await h.sleep(100);
+            // Pause/Stop and rerenders can occur during the settling wait.
+            if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+            const current = this.findCustomBudgetOption();
+            if (current && !current.disabled && !current.selected) {
+              h.safeClick(current.target);
+              clicked = true;
+            }
+          }
+        } else if (!detected && Date.now() - started >= 1000) {
+          console.log('[BUDGET] Custom budget not present');
+          console.log('[BUDGET] Using existing daily budget flow');
+          return;
+        }
+        await h.sleep(200);
+      }
+      throw new Error('Custom budget option did not become available and selected in the Campaign Budget section.');
     }
 
     /**
