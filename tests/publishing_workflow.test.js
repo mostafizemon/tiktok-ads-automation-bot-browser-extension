@@ -180,6 +180,7 @@ function createMockEnvironment() {
 
   const mockChrome = {
     runtime: {
+      id: 'mock-tiktok-ads-extension-id',
       lastError: null,
       onMessage: { addListener: () => {} }
     },
@@ -274,14 +275,14 @@ function setupGlobalScope(env) {
   const StorageService = require('../storage.js');
   const AutomationHelpers = require('../automation/helpers.js');
   const { CampaignAutomation } = require('../automation/campaign.js');
-  const { AutomationRunner, RUNNER_STATES, WORKFLOW_STEPS } = require('../automation/runner.js');
+  const { AutomationRunner, AutomationRunnerClass, RUNNER_STATES, WORKFLOW_STEPS } = require('../automation/runner.js');
 
   global.StorageService = StorageService;
   global.AutomationHelpers = AutomationHelpers;
   global.CampaignAutomation = CampaignAutomation;
   global.AutomationRunner = AutomationRunner;
 
-  return { StorageService, AutomationHelpers, CampaignAutomation, AutomationRunner, RUNNER_STATES, WORKFLOW_STEPS };
+  return { StorageService, AutomationHelpers, CampaignAutomation, AutomationRunner, AutomationRunnerClass, RUNNER_STATES, WORKFLOW_STEPS };
 }
 
 // Helper to create the verified Publish All button in DOM
@@ -403,19 +404,44 @@ async function runTests() {
     assert.strictEqual(job.submissionEvidence.campaignId, '1812345678901234');
   });
 
-  // --- SCENARIO 2: PUBLISH SUCCESS WITH IMMEDIATE REDIRECT ---
-  await test('Scenario 2: Publish success with immediate redirect (table status verification)', async (env, mods) => {
+  // --- SCENARIO 2A: CAMPAIGN SUBMITTED WITH "NOT DELIVERED" DELIVERY STATUS ---
+  await test('Scenario 2A: Campaign with "Not Delivered" status is accepted as created', async (env, mods) => {
     const { CampaignAutomation, StorageService } = mods;
     createPublishAllButton(env.mockDocument, true);
 
-    const config = { liveMode: true, campaignCount: 1 };
+    const config = { liveMode: true, campaignCount: 1, dailyBudget: '50.00' };
 
-    // Simulate immediate redirect to Campaigns page without prior toast
     setTimeout(() => {
       env.setUrl('https://ads.tiktok.com/i18n/manage/campaign');
       const { table } = createCampaignsManagementUI(env.mockDocument);
 
-      // Refreshed table row with "Under review" status
+      // Verified TikTok campaign table row with "Not Delivered" delivery status
+      const row = new MockNode('tr', { class: 'byted-table-row', 'data-row-key': '1' });
+      row.innerText = 'New Campaign 1   1899998888777755   Not Delivered   $50.00';
+      table.appendChild(row);
+    }, 200);
+
+    const result = await CampaignAutomation.handlePublishStep(config, 1, 1, 15000);
+    assert.strictEqual(result.reloading, true);
+
+    const job = await StorageService.getJobState();
+    const verifyResult = await CampaignAutomation.verifySubmittedCampaign(job, 3000);
+
+    assert.strictEqual(verifyResult.verified, true, '"Not Delivered" delivery status must NOT block verification');
+    assert.strictEqual(verifyResult.campaignId, '1899998888777755');
+  });
+
+  // --- SCENARIO 2B: CAMPAIGN SUBMITTED WITH "UNDER REVIEW" STATUS ---
+  await test('Scenario 2B: Campaign with "Under review" status is accepted', async (env, mods) => {
+    const { CampaignAutomation, StorageService } = mods;
+    createPublishAllButton(env.mockDocument, true);
+
+    const config = { liveMode: true, campaignCount: 1, dailyBudget: '50.00' };
+
+    setTimeout(() => {
+      env.setUrl('https://ads.tiktok.com/i18n/manage/campaign');
+      const { table } = createCampaignsManagementUI(env.mockDocument);
+
       const row = new MockNode('tr', { class: 'byted-table-row', 'data-row-key': '1' });
       row.innerText = 'New Campaign 1   1899998888777766   Under review   $50.00';
       table.appendChild(row);
@@ -429,6 +455,181 @@ async function runTests() {
 
     assert.strictEqual(verifyResult.verified, true, 'Should verify from table row status');
     assert.strictEqual(verifyResult.campaignId, '1899998888777766');
+  });
+
+  // --- SCENARIO 2C: CAMPAIGN SUBMITTED WITH "ACTIVE" STATUS ---
+  await test('Scenario 2C: Campaign with "Active" status is accepted', async (env, mods) => {
+    const { CampaignAutomation, StorageService } = mods;
+    createPublishAllButton(env.mockDocument, true);
+
+    const config = { liveMode: true, campaignCount: 1, dailyBudget: '50.00' };
+
+    setTimeout(() => {
+      env.setUrl('https://ads.tiktok.com/i18n/manage/campaign');
+      const { table } = createCampaignsManagementUI(env.mockDocument);
+
+      const row = new MockNode('tr', { class: 'byted-table-row', 'data-row-key': '1' });
+      row.innerText = 'New Campaign 1   1899998888777777   Active   $50.00';
+      table.appendChild(row);
+    }, 200);
+
+    const result = await CampaignAutomation.handlePublishStep(config, 1, 1, 15000);
+    assert.strictEqual(result.reloading, true);
+
+    const job = await StorageService.getJobState();
+    const verifyResult = await CampaignAutomation.verifySubmittedCampaign(job, 3000);
+
+    assert.strictEqual(verifyResult.verified, true, 'Should verify from table row status');
+    assert.strictEqual(verifyResult.campaignId, '1899998888777777');
+  });
+
+  // --- SCENARIO 2E: REAL-BROWSER CASE: CAMPAIGN NAME Traffic20261013161035 WITHOUT VISIBLE ID ---
+  await test('Scenario 2E: Real-browser case: Campaign Traffic20261013161035 with 44.00 USD and Not delivered without visible ID verifies successfully', async (env, mods) => {
+    const { CampaignAutomation, StorageService } = mods;
+    createPublishAllButton(env.mockDocument, true);
+
+    const config = { liveMode: true, campaignCount: 1, dailyBudget: '44.00' };
+
+    // Set expected campaign name as captured during creation
+    await StorageService.updateJobState({
+      expectedCampaignName: 'Traffic20261013161035'
+    });
+
+    setTimeout(() => {
+      env.setUrl('https://ads.tiktok.com/i18n/manage/campaign?aadvid=778899');
+      const { table } = createCampaignsManagementUI(env.mockDocument);
+
+      // Exact table row structure and text observed in real browser:
+      const row = new MockNode('tr', { class: 'byted-table-row' });
+      row.innerText = 'Traffic20261013161035\nNot delivered\n44.00 USD\nDaily, Campaign budget\n0.00 USD';
+      table.appendChild(row);
+    }, 200);
+
+    const result = await CampaignAutomation.handlePublishStep(config, 1, 1, 15000);
+    assert.strictEqual(result.reloading, true);
+
+    const job = await StorageService.getJobState();
+    const verifyResult = await CampaignAutomation.verifySubmittedCampaign(job, 3000);
+
+    assert.strictEqual(verifyResult.verified, true, 'Campaign Traffic20261013161035 must be verified by name and budget');
+    assert.strictEqual(verifyResult.campaignName, 'Traffic20261013161035');
+    assert.strictEqual(verifyResult.campaignId, null, 'Numeric campaignId must be null when not rendered in table');
+  });
+
+  // --- SCENARIO 2F: CAMPAIGN ID PRESENT ONLY IN ROW ATTRIBUTE ---
+  await test('Scenario 2F: Campaign ID present only in data-row-key attribute is extracted and verified', async (env, mods) => {
+    const { CampaignAutomation, StorageService } = mods;
+    createPublishAllButton(env.mockDocument, true);
+
+    const config = { liveMode: true, campaignCount: 1, dailyBudget: '44.00' };
+
+    setTimeout(() => {
+      env.setUrl('https://ads.tiktok.com/i18n/manage/campaign');
+      const { table } = createCampaignsManagementUI(env.mockDocument);
+
+      // ID in data-row-key, but text only shows name and budget
+      const row = new MockNode('tr', { class: 'byted-table-row', 'data-row-key': '1899123456789012' });
+      row.innerText = 'Traffic20261013161035\nNot delivered\n44.00 USD\nDaily, Campaign budget\n0.00 USD';
+      table.appendChild(row);
+    }, 200);
+
+    const result = await CampaignAutomation.handlePublishStep(config, 1, 1, 15000);
+    assert.strictEqual(result.reloading, true);
+
+    const job = await StorageService.getJobState();
+    const verifyResult = await CampaignAutomation.verifySubmittedCampaign(job, 3000);
+
+    assert.strictEqual(verifyResult.verified, true);
+    assert.strictEqual(verifyResult.campaignId, '1899123456789012', 'Must extract numeric campaign ID from data-row-key');
+    assert.strictEqual(verifyResult.campaignName, 'Traffic20261013161035');
+  });
+
+  // --- SCENARIO 2G: OLD CAMPAIGN WITH IDENTICAL BUDGET DISTINGUISHED BY NAME ---
+  await test('Scenario 2G: Pre-existing old campaign with identical budget 44.00 USD is distinguished by name', async (env, mods) => {
+    const { CampaignAutomation, StorageService } = mods;
+    createPublishAllButton(env.mockDocument, true);
+
+    const config = { liveMode: true, campaignCount: 1, dailyBudget: '44.00' };
+
+    // Baseline had an old campaign
+    await StorageService.updateJobState({
+      expectedCampaignName: 'Traffic20261013161035',
+      knownCampaignNames: ['oldcampaign44']
+    });
+
+    setTimeout(() => {
+      env.setUrl('https://ads.tiktok.com/i18n/manage/campaign');
+      const { table } = createCampaignsManagementUI(env.mockDocument);
+
+      // Old row
+      const oldRow = new MockNode('tr', { class: 'byted-table-row' });
+      oldRow.innerText = 'OldCampaign44\nActive\n44.00 USD\nDaily, Campaign budget\n10.00 USD';
+      table.appendChild(oldRow);
+
+      // New row
+      const newRow = new MockNode('tr', { class: 'byted-table-row' });
+      newRow.innerText = 'Traffic20261013161035\nNot delivered\n44.00 USD\nDaily, Campaign budget\n0.00 USD';
+      table.appendChild(newRow);
+    }, 200);
+
+    const result = await CampaignAutomation.handlePublishStep(config, 1, 1, 15000);
+    assert.strictEqual(result.reloading, true);
+
+    const job = await StorageService.getJobState();
+    const verifyResult = await CampaignAutomation.verifySubmittedCampaign(job, 3000);
+
+    assert.strictEqual(verifyResult.verified, true);
+    assert.strictEqual(verifyResult.campaignName, 'Traffic20261013161035');
+    assert.strictEqual(verifyResult.campaignId, null);
+  });
+
+  // --- SCENARIO 2H: UNSAFE PREFIX / SUBSTRING MATCH REJECTION ---
+  await test('Scenario 2H: Unsafe prefix/substring matching is rejected (Traffic20261013161035_other does not match)', async (env, mods) => {
+    const { CampaignAutomation, StorageService } = mods;
+
+    await StorageService.updateJobState({
+      expectedCampaignName: 'Traffic20261013161035',
+      expectedBudget: '44.00'
+    });
+
+    env.setUrl('https://ads.tiktok.com/i18n/manage/campaign');
+    const { table } = createCampaignsManagementUI(env.mockDocument);
+
+    // Row has prefix/suffix, not exact name
+    const row = new MockNode('tr', { class: 'byted-table-row' });
+    row.innerText = 'Traffic20261013161035_other\nNot delivered\n44.00 USD\nDaily, Campaign budget\n0.00 USD';
+    table.appendChild(row);
+
+    const job = await StorageService.getJobState();
+    const verifyResult = await CampaignAutomation.verifySubmittedCampaign(job, 1000);
+
+    assert.strictEqual(verifyResult.verified, false, 'Unsafe prefix match must be rejected');
+    assert.strictEqual(verifyResult.ambiguous, true);
+  });
+
+  // --- SCENARIO 2I: ADVERTISER ACCOUNT MISMATCH REJECTION ---
+  await test('Scenario 2I: Mismatched advertiser account URL is rejected even with matching name and budget', async (env, mods) => {
+    const { CampaignAutomation, StorageService } = mods;
+
+    await StorageService.updateJobState({
+      expectedCampaignName: 'Traffic20261013161035',
+      expectedBudget: '44.00',
+      advertiserId: '778899112233'
+    });
+
+    // Current page URL has different advertiser ID
+    env.setUrl('https://ads.tiktok.com/i18n/manage/campaign?aadvid=999999999999');
+    const { table } = createCampaignsManagementUI(env.mockDocument);
+
+    const row = new MockNode('tr', { class: 'byted-table-row' });
+    row.innerText = 'Traffic20261013161035\nNot delivered\n44.00 USD\nDaily, Campaign budget\n0.00 USD';
+    table.appendChild(row);
+
+    const job = await StorageService.getJobState();
+    const verifyResult = await CampaignAutomation.verifySubmittedCampaign(job, 1000);
+
+    assert.strictEqual(verifyResult.verified, false, 'Advertiser account mismatch must be rejected');
+    assert.strictEqual(verifyResult.ambiguous, true);
   });
 
   // --- SCENARIO 3: REDIRECT WITHOUT SUCCESS CONFIRMATION ---
@@ -476,6 +677,131 @@ async function runTests() {
     assert.strictEqual(result.success, false, 'Publish step must fail on error');
     assert.ok(result.error.includes('insufficient'), 'Should capture error text');
     assert.strictEqual(env.getReloadCount(), 0, 'Must NOT refresh on error');
+
+    const job = await StorageService.getJobState();
+    assert.strictEqual(job.status, 'FAILED');
+    assert.strictEqual(job.submissionStatus, 'FAILED');
+  });
+
+  // --- SCENARIO 4B: INFORMATIONAL UTM NOTIFICATION DOES NOT FAIL SUBMISSION ---
+  await test('Scenario 4B: Informational UTM notification does not mark submission FAILED or independently establish SUCCESS', async (env, mods) => {
+    const { CampaignAutomation, StorageService } = mods;
+    const { innerBtn } = createPublishAllButton(env.mockDocument, true);
+
+    let clickCount = 0;
+    innerBtn.addEventListener('click', () => { clickCount++; });
+
+    const config = { liveMode: true, campaignCount: 1, dailyBudget: '50.00' };
+
+    // 1. Simulate exact informational TikTok UTM tracking alert appearing after Publish All
+    setTimeout(() => {
+      const utmNotice = new MockNode('div', { class: 'arco-message-info', role: 'alert' });
+      utmNotice.innerText = 'We auto-added 4 UTM parameters to your URL.';
+      env.mockDocument.body.appendChild(utmNotice);
+    }, 200);
+
+    // 2. Check intermediate state while UTM notice is visible:
+    // It must NOT set submissionStatus to FAILED, and must NOT set SUBMITTED prematurely
+    setTimeout(async () => {
+      const midJob = await StorageService.getJobState();
+      assert.notStrictEqual(midJob.status, 'FAILED', 'UTM notice must not fail job');
+      assert.strictEqual(midJob.submissionStatus, 'SUBMISSION_PENDING', 'UTM notice does not independently establish success');
+    }, 350);
+
+    // 3. Simulate subsequent normal redirect to Campaigns page
+    setTimeout(() => {
+      env.setUrl('https://ads.tiktok.com/i18n/manage/campaign');
+      const { table } = createCampaignsManagementUI(env.mockDocument);
+      const row = new MockNode('tr', { class: 'byted-table-row', 'data-row-key': '1' });
+      row.innerText = 'New Campaign 1   1899998888777799   Not Delivered   $50.00';
+      table.appendChild(row);
+    }, 600);
+
+    const result = await CampaignAutomation.handlePublishStep(config, 1, 1, 15000);
+    assert.strictEqual(clickCount, 1, 'Publish All must be clicked exactly once');
+    assert.strictEqual(result.submitted, true, 'Campaign submitted');
+    assert.strictEqual(result.reloading, true, 'Proceeds to refresh despite informational UTM alert');
+    assert.strictEqual(env.getReloadCount(), 1, 'Full page reload triggered exactly once');
+
+    const job = await StorageService.getJobState();
+    assert.strictEqual(job.refreshCheckpoint, 'REFRESH_IN_PROGRESS');
+
+    // Submission verification succeeds from table row (even with "Not Delivered")
+    const verifyResult = await CampaignAutomation.verifySubmittedCampaign(job, 3000);
+    assert.strictEqual(verifyResult.verified, true);
+    assert.strictEqual(verifyResult.campaignId, '1899998888777799');
+  });
+
+  // --- SCENARIO 4C: ACTUAL URL VALIDATION ERROR STOPS THE BATCH ---
+  await test('Scenario 4C: Actual URL validation error stops the batch', async (env, mods) => {
+    const { CampaignAutomation, StorageService } = mods;
+    createPublishAllButton(env.mockDocument, true);
+
+    const config = { liveMode: true, campaignCount: 1 };
+
+    // Simulate real URL validation error
+    setTimeout(() => {
+      const urlError = new MockNode('div', { class: 'vi-form-item__error' });
+      urlError.innerText = 'Please enter a valid website URL';
+      env.mockDocument.body.appendChild(urlError);
+    }, 200);
+
+    const result = await CampaignAutomation.handlePublishStep(config, 1, 1, 5000);
+    assert.strictEqual(result.success, false, 'Publish step must fail on actual URL error');
+    assert.ok(result.error.toLowerCase().includes('valid website url'), 'Should capture URL validation error');
+    assert.strictEqual(env.getReloadCount(), 0, 'Must NOT refresh on URL validation error');
+
+    const job = await StorageService.getJobState();
+    assert.strictEqual(job.status, 'FAILED');
+    assert.strictEqual(job.submissionStatus, 'FAILED');
+  });
+
+  // --- SCENARIO 4D: ACTUAL UTM VALIDATION FAILURE STOPS THE BATCH ---
+  await test('Scenario 4D: Actual UTM validation failure stops the batch', async (env, mods) => {
+    const { CampaignAutomation, StorageService } = mods;
+    createPublishAllButton(env.mockDocument, true);
+
+    const config = { liveMode: true, campaignCount: 1 };
+
+    // Simulate real UTM error (not informational)
+    setTimeout(() => {
+      const utmError = new MockNode('div', { class: 'byted-message-error' });
+      utmError.innerText = 'Invalid UTM parameter format: spaces are not allowed.';
+      env.mockDocument.body.appendChild(utmError);
+    }, 200);
+
+    const result = await CampaignAutomation.handlePublishStep(config, 1, 1, 5000);
+    assert.strictEqual(result.success, false, 'Publish step must fail on real UTM error');
+    assert.ok(result.error.toLowerCase().includes('invalid utm parameter'), 'Should capture UTM error');
+    assert.strictEqual(env.getReloadCount(), 0, 'Must NOT refresh on UTM error');
+
+    const job = await StorageService.getJobState();
+    assert.strictEqual(job.status, 'FAILED');
+    assert.strictEqual(job.submissionStatus, 'FAILED');
+  });
+
+  // --- SCENARIO 4E: INFORMATIONAL NOTIFICATION AND REAL ERROR APPEARING TOGETHER ---
+  await test('Scenario 4E: Informational UTM notice and real error together still stops batch', async (env, mods) => {
+    const { CampaignAutomation, StorageService } = mods;
+    createPublishAllButton(env.mockDocument, true);
+
+    const config = { liveMode: true, campaignCount: 1 };
+
+    // Simulate informational notice AND real form error both present in DOM
+    setTimeout(() => {
+      const utmNotice = new MockNode('div', { class: 'arco-message-info', role: 'alert' });
+      utmNotice.innerText = 'We auto-added 4 UTM parameters to your URL.';
+      env.mockDocument.body.appendChild(utmNotice);
+
+      const budgetError = new MockNode('div', { class: 'vi-form-item__error' });
+      budgetError.innerText = 'Daily budget must be at least $50.00';
+      env.mockDocument.body.appendChild(budgetError);
+    }, 200);
+
+    const result = await CampaignAutomation.handlePublishStep(config, 1, 1, 5000);
+    assert.strictEqual(result.success, false, 'Must fail when real error is present');
+    assert.ok(result.error.toLowerCase().includes('budget'), 'Must detect real budget error despite UTM notice');
+    assert.strictEqual(env.getReloadCount(), 0, 'Must NOT refresh when error present');
 
     const job = await StorageService.getJobState();
     assert.strictEqual(job.status, 'FAILED');
@@ -544,9 +870,13 @@ async function runTests() {
       }
     });
 
-    // Mock executeSingleCampaign for Campaign 2 so it completes without requiring full DOM form
+    let campaign2Started = false;
+    // Mock executeSingleCampaign for Campaign 2 so it simulates publish and reload trigger
     AutomationRunner.executeSingleCampaign = async (idx, cfg) => {
+      campaign2Started = true;
+      assert.strictEqual(idx, 2, 'Must execute Campaign 2');
       await StorageService.updateJobState({
+        currentCampaignIndex: 2,
         submissionStatus: 'SUBMISSION_PENDING',
         refreshCheckpoint: 'REFRESH_IN_PROGRESS',
         submissionEvidence: { confirmed: true, type: 'MODAL', campaignId: '1822222222222222' }
@@ -554,12 +884,141 @@ async function runTests() {
       return { success: true, reloading: true };
     };
 
+    // Step 1: Content script on reloaded page resumes Campaign 1
     const jobState = await StorageService.getJobState();
     await AutomationRunner.handlePostRefreshResume(jobState, config);
+
+    assert.strictEqual(campaign2Started, true, 'Campaign 2 must be started automatically');
+
+    const midState = await StorageService.getJobState();
+    assert.strictEqual(midState.successfulCampaigns, 1, 'Campaign 1 must be verified before Campaign 2');
+
+    // Step 2: Fresh content script created after Campaign 2 reload
+    const runner2 = new mods.AutomationRunnerClass();
+    runner2.executeSingleCampaign = AutomationRunner.executeSingleCampaign;
+    await runner2.initialize();
 
     const postAll = await StorageService.getJobState();
     assert.strictEqual(postAll.successfulCampaigns, 2, 'Both campaigns must be verified');
     assert.strictEqual(postAll.status, 'COMPLETED', 'Job must complete after reaching campaign count');
+  });
+
+  // --- SCENARIO 6B: COUNT 3 ALL THREE CAMPAIGNS SEQUENTIALLY ---
+  await test('Scenario 6B: Campaign Count 3 executes all three campaigns sequentially (1/3 -> 2/3 -> 3/3 -> COMPLETED)', async (env, mods) => {
+    const { StorageService, AutomationRunner } = mods;
+
+    env.setUrl('https://ads.tiktok.com/i18n/manage/campaign');
+    createCampaignsManagementUI(env.mockDocument);
+
+    const config = { liveMode: true, campaignCount: 3 };
+    await StorageService.saveConfig(config);
+
+    // Initial state after Campaign 1 submitted and refreshed
+    await StorageService.saveJobState({
+      status: 'RUNNING',
+      runId: 'run_count_3_test',
+      currentCampaignIndex: 1,
+      totalCampaigns: 3,
+      successfulCampaigns: 0,
+      currentStep: 'REFRESH_CAMPAIGNS',
+      refreshCheckpoint: 'REFRESH_IN_PROGRESS',
+      submissionStatus: 'SUBMISSION_PENDING',
+      submissionEvidence: { confirmed: true, type: 'MODAL', campaignId: '1811111111111111' }
+    });
+
+    const executedCampaigns = [];
+    AutomationRunner.executeSingleCampaign = async (idx, cfg) => {
+      executedCampaigns.push(idx);
+      await StorageService.updateJobState({
+        currentCampaignIndex: idx,
+        submissionStatus: 'SUBMISSION_PENDING',
+        refreshCheckpoint: 'REFRESH_IN_PROGRESS',
+        submissionEvidence: { confirmed: true, type: 'MODAL', campaignId: `18${idx}${idx}${idx}${idx}` }
+      });
+      return { success: true, reloading: true };
+    };
+
+    // Step 1: Content script on reloaded page resumes and verifies Campaign 1 -> starts Campaign 2
+    const jobState = await StorageService.getJobState();
+    await AutomationRunner.handlePostRefreshResume(jobState, config);
+    assert.ok(executedCampaigns.includes(2), 'Must start Campaign 2');
+
+    // Step 2: Fresh content script created after Campaign 2 reload -> verifies Campaign 2 -> starts Campaign 3
+    const runner2 = new mods.AutomationRunnerClass();
+    runner2.executeSingleCampaign = AutomationRunner.executeSingleCampaign;
+    await runner2.initialize();
+    assert.ok(executedCampaigns.includes(3), 'Must start Campaign 3');
+
+    // Step 3: Fresh content script created after Campaign 3 reload -> verifies Campaign 3 -> COMPLETED
+    const runner3 = new mods.AutomationRunnerClass();
+    runner3.executeSingleCampaign = AutomationRunner.executeSingleCampaign;
+    await runner3.initialize();
+
+    const finalState = await StorageService.getJobState();
+    assert.strictEqual(finalState.successfulCampaigns, 3, 'All 3 campaigns must be verified');
+    assert.strictEqual(finalState.status, 'COMPLETED', 'Batch must complete after reaching campaignCount 3');
+  });
+
+  // --- SCENARIO 6C: CAMPAIGN COUNT = 2 WITH UTM NOTICE CONTINUES AUTOMATICALLY ---
+  await test('Scenario 6C: Campaign Count = 2 with informational UTM notification continues automatically to Campaign 2', async (env, mods) => {
+    const { StorageService, AutomationRunner } = mods;
+
+    env.setUrl('https://ads.tiktok.com/i18n/manage/campaign');
+    createCampaignsManagementUI(env.mockDocument);
+
+    const config = { liveMode: true, campaignCount: 2, dailyBudget: '50.00' };
+    await StorageService.saveConfig(config);
+
+    // Initial state: Campaign 1 submitted, encountered informational UTM notice, and refreshed
+    await StorageService.saveJobState({
+      status: 'RUNNING',
+      runId: 'run_utm_multi_test',
+      currentCampaignIndex: 1,
+      totalCampaigns: 2,
+      successfulCampaigns: 0,
+      currentStep: 'REFRESH_CAMPAIGNS',
+      refreshCheckpoint: 'REFRESH_IN_PROGRESS',
+      submissionStatus: 'SUBMISSION_PENDING',
+      submissionEvidence: {
+        confirmed: true,
+        type: 'MODAL',
+        campaignId: '1899111122223333'
+      }
+    });
+
+    let campaign2ClickedCreate = false;
+    let campaign2Executed = false;
+
+    AutomationRunner.executeSingleCampaign = async (idx, cfg) => {
+      campaign2Executed = true;
+      assert.strictEqual(idx, 2, 'Must execute Campaign 2');
+      // Simulate Campaign 2 completion
+      await StorageService.updateJobState({
+        currentCampaignIndex: 2,
+        submissionStatus: 'SUBMISSION_PENDING',
+        refreshCheckpoint: 'REFRESH_IN_PROGRESS',
+        submissionEvidence: { confirmed: true, type: 'MODAL', campaignId: '1899444455556666' }
+      });
+      return { success: true, reloading: true };
+    };
+
+    // Step 1: Content script resumes after Campaign 1 refresh
+    const jobState = await StorageService.getJobState();
+    await AutomationRunner.handlePostRefreshResume(jobState, config);
+
+    assert.strictEqual(campaign2Executed, true, 'Campaign 2 must be started automatically after Campaign 1 verifies');
+
+    const midJob = await StorageService.getJobState();
+    assert.strictEqual(midJob.successfulCampaigns, 1, 'Campaign 1 must be recorded as successful');
+
+    // Step 2: Fresh runner after Campaign 2 reload
+    const runner2 = new mods.AutomationRunnerClass();
+    runner2.executeSingleCampaign = AutomationRunner.executeSingleCampaign;
+    await runner2.initialize();
+
+    const finalJob = await StorageService.getJobState();
+    assert.strictEqual(finalJob.successfulCampaigns, 2, 'Both campaigns must be successfully completed');
+    assert.strictEqual(finalJob.status, 'COMPLETED', 'Batch must be marked COMPLETED');
   });
 
   // --- SCENARIO 7: PAGE RELOAD DURING SUBMISSION ---
@@ -587,12 +1046,21 @@ async function runTests() {
 
     await StorageService.saveConfig({ liveMode: true, campaignCount: 1 });
 
-    // Simulate reload initializing runner
+    // Step 1: Content script injected on redirected page (saves checkpoint and reloads)
     await AutomationRunner.initialize();
+
+    const midJob = await StorageService.getJobState();
+    assert.strictEqual(midJob.refreshCheckpoint, 'REFRESH_IN_PROGRESS', 'Should save refresh checkpoint before reload');
+    assert.strictEqual(env.getReloadCount(), 1, 'Should trigger page reload');
+
+    // Step 2: Fresh content script injected on reloaded page
+    const reloadedRunner = new mods.AutomationRunnerClass();
+    await reloadedRunner.initialize();
 
     const job = await StorageService.getJobState();
     assert.strictEqual(job.successfulCampaigns, 1, 'Should recover, refresh once, and verify');
     assert.strictEqual(job.status, 'COMPLETED');
+    assert.strictEqual(env.getReloadCount(), 1, 'Must not reload a second time');
   });
 
   // --- SCENARIO 8: UNKNOWN SUBMISSION OUTCOME (TIMEOUT) ---
@@ -660,6 +1128,30 @@ async function runTests() {
     const job = await StorageService.getJobState();
     assert.strictEqual(job.status, 'PAUSED', 'Job state must be PAUSED');
     assert.strictEqual(AutomationRunner.shouldAbort, true, 'Runner shouldAbort must be true');
+  });
+
+  // --- SCENARIO 11: EXTENSION CONTEXT INVALIDATED IS HANDLED SAFELY ---
+  await test('Scenario 11: Extension context invalidated is handled gracefully without unhandled exceptions', async (env, mods) => {
+    const { StorageService } = mods;
+
+    // Simulate invalidated extension context by removing runtime.id
+    const origId = global.chrome.runtime.id;
+    delete global.chrome.runtime.id;
+
+    assert.strictEqual(StorageService.isContextValid(), false, 'isContextValid must return false when runtime.id is absent');
+
+    const config = await StorageService.getConfig();
+    assert.ok(config, 'getConfig must return default config fallback');
+
+    const job = await StorageService.getJobState();
+    assert.ok(job, 'getJobState must return default job fallback');
+
+    const saveSuccess = await StorageService.saveJobState({ status: 'RUNNING' });
+    assert.strictEqual(saveSuccess, false, 'saveJobState must resolve false gracefully');
+
+    // Restore runtime.id
+    global.chrome.runtime.id = origId;
+    assert.strictEqual(StorageService.isContextValid(), true);
   });
 
   console.log('\n==================================================');

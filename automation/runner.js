@@ -92,6 +92,12 @@
     async initialize() {
       this.log('Initializing Automation Runner...');
 
+      // Halt if extension context is invalid to protect storage checkpoints
+      if (this.storage && typeof this.storage.isContextValid === 'function' && !this.storage.isContextValid()) {
+        this.log('Extension context is invalid. Halting runner initialization to protect persisted checkpoints.');
+        return;
+      }
+
       // Prevent duplicate instances if runner is already active in this tab
       if (this.isProcessingLock) {
         this.log('Runner already processing in this tab. Skipping duplicate initialize.');
@@ -111,26 +117,63 @@
         const config = await this.storage?.getConfig();
         this.activeConfig = config;
 
+        if (this.shouldAbort || this.helpers?.isAborted()) {
+          this.log('Runner aborted or paused; halting initialize resume.');
+          return;
+        }
+
+        // 1. Post-Reload Recovery: A full page reload was already initiated
         if (jobState.refreshCheckpoint === 'REFRESH_IN_PROGRESS' || jobState.currentStep === WORKFLOW_STEPS.REFRESH_CAMPAIGNS) {
           this.diag('RELOAD_RECOVERY', 'Resuming sequential loop after page refresh', {
             verification: `Resuming at Campaign ${jobState.currentCampaignIndex} of ${jobState.totalCampaigns}`
           });
           await this.handlePostRefreshResume(jobState, config);
-        } else if (jobState.submissionStatus === 'SUBMISSION_PENDING') {
-          this.diag('RELOAD_RECOVERY', 'Resuming workflow after submission pending reload', {
-            verification: `Checking Campaign ${jobState.currentCampaignIndex} redirect`
-          });
-          await this.handleSubmissionPendingResume(jobState, config);
-        } else {
-          // If page navigated or refreshed unexpectedly in the middle of a step,
-          // pause safely to avoid duplicate actions
-          this.warn(`Unexpected page reload during step: ${jobState.currentStep}. Pausing for safety.`);
-          await this.storage?.updateJobState({
-            status: RUNNER_STATES.PAUSED,
-            stepDescription: `Paused after page reload at: ${jobState.currentStep}`
-          });
-          this.currentState = RUNNER_STATES.PAUSED;
+          return;
         }
+
+        // 2. Post-Publish Redirect Recovery: Campaign was published and returned to Campaigns page (or is redirecting),
+        // but the full-page reload has not yet occurred
+        const isPostPublishPhase = (
+          jobState.submissionStatus === 'SUBMISSION_PENDING' ||
+          jobState.submissionStatus === 'SUBMITTED' ||
+          jobState.currentStep === WORKFLOW_STEPS.PUBLISH_PENDING ||
+          jobState.currentStep === WORKFLOW_STEPS.WAITING_FOR_CAMPAIGNS_PAGE ||
+          jobState.currentStep === WORKFLOW_STEPS.SETTLING_AFTER_REDIRECT
+        );
+
+        if (isPostPublishPhase && jobState.refreshCheckpoint !== 'REFRESH_COMPLETED') {
+          this.diag('REDIRECT_RECOVERY', 'Resuming post-publish redirect lifecycle', {
+            verification: `Checking Campaign ${jobState.currentCampaignIndex} redirect to Campaigns page`
+          });
+          await this.handlePostPublishRedirectResume(jobState, config);
+          return;
+        }
+
+        // 3. Already refreshed for this campaign, but need to verify submission
+        if (jobState.refreshCheckpoint === 'REFRESH_COMPLETED' && jobState.currentStep === WORKFLOW_STEPS.VERIFY_SUBMISSION) {
+          this.diag('RELOAD_RECOVERY', 'Refresh already completed; verifying submission', {
+            verification: `Verifying Campaign ${jobState.currentCampaignIndex}`
+          });
+          await this.handlePostRefreshResume(jobState, config);
+          return;
+        }
+
+        // 4. Ready for next campaign after refresh and verification
+        if (jobState.currentStep === WORKFLOW_STEPS.CLICK_CREATE || jobState.currentStep === WORKFLOW_STEPS.READY_FOR_NEXT_CAMPAIGN) {
+          this.diag('SEQUENTIAL_RECOVERY', `Resuming campaign creation loop at Campaign ${jobState.currentCampaignIndex}`, {
+            verification: `Campaign ${jobState.currentCampaignIndex} of ${jobState.totalCampaigns}`
+          });
+          await this.executeCampaignLoop(jobState.currentCampaignIndex, jobState.totalCampaigns, config);
+          return;
+        }
+
+        // 5. Unexpected page reload during an interactive step (e.g., in the middle of typing URL or budget)
+        this.warn(`Unexpected page reload during step: ${jobState.currentStep}. Pausing for safety.`);
+        await this.storage?.updateJobState({
+          status: RUNNER_STATES.PAUSED,
+          stepDescription: `Paused after page reload at: ${jobState.currentStep}`
+        });
+        this.currentState = RUNNER_STATES.PAUSED;
       }
     }
 
@@ -192,9 +235,13 @@
      */
     async executeCampaignLoop(startIndex, totalCampaigns, config) {
       let currentIndex = startIndex;
+      const effectiveConfig = {
+        ...config,
+        campaignCount: totalCampaigns
+      };
 
       while (currentIndex <= totalCampaigns) {
-        if (this.shouldAbort) {
+        if (this.shouldAbort || this.helpers?.isAborted()) {
           this.diag('CAMPAIGN_LOOP', `Loop halted due to user abort/pause request at Campaign ${currentIndex}`);
           this.isProcessingLock = false;
           return;
@@ -202,7 +249,7 @@
 
         console.log(`[RUNNER] Starting Campaign ${currentIndex}/${totalCampaigns}`);
         this.log(`========================================`);
-        this.log(`🚀 Starting Campaign ${currentIndex} / ${totalCampaigns} (Mode: ${config.liveMode ? 'LIVE' : 'TEST'})`);
+        this.log(`🚀 Starting Campaign ${currentIndex} / ${totalCampaigns} (Mode: ${effectiveConfig.liveMode ? 'LIVE' : 'TEST'})`);
         this.log(`========================================`);
 
         await this.storage?.updateJobState({
@@ -211,16 +258,14 @@
           stepDescription: `Running Campaign ${currentIndex} of ${totalCampaigns}`
         });
 
-        const result = await this.executeSingleCampaign(currentIndex, config);
+        const result = await this.executeSingleCampaign(currentIndex, effectiveConfig);
 
-        if (this.shouldAbort) {
+        if (this.shouldAbort || this.helpers?.isAborted()) {
           this.isProcessingLock = false;
           return;
         }
 
-        // TASK 3 & TASK 9: Test Mode Handling
-        // Test Mode must stop immediately before Publish All, display "Test completed — Ready to Publish",
-        // never mark campaign as published, and never loop to next campaign.
+        // Test Mode Handling
         if (result.testMode) {
           this.diag('TEST_MODE', 'Test Mode execution finished before publish', {
             verification: 'Test completed — Ready to Publish'
@@ -235,19 +280,15 @@
           this.currentState = RUNNER_STATES.COMPLETED;
           this.isProcessingLock = false;
           this.log('🎉 Test completed — Ready to Publish. No campaigns published.');
-          return; // Stop immediately!
+          return;
         }
 
         // Live Mode: Tab refresh was initiated
         if (result.reloading) {
           this.log(`Campaign ${currentIndex} publish step initiated refresh.`);
-          // In real browser, page reloads and resumes via initialize().
-          // In test mocks where reload() is intercepted:
-          await this.helpers?.sleep(500);
-          const updatedJob = await this.storage?.getJobState();
-          if (updatedJob && (updatedJob.refreshCheckpoint === 'REFRESH_IN_PROGRESS' || updatedJob.currentStep === WORKFLOW_STEPS.REFRESH_CAMPAIGNS)) {
-            await this.handlePostRefreshResume(updatedJob, config);
-          }
+          // In real browser, window.location.reload() tears down this execution context.
+          // Fresh content script will resume via initialize().
+          this.isProcessingLock = false;
           return;
         }
 
@@ -281,8 +322,10 @@
           }
 
           this.isProcessingLock = false;
-          return; // Stop loop safely
+          return;
         }
+
+        currentIndex++;
       }
 
       // Mark Job Completed if reached naturally
@@ -298,85 +341,98 @@
     }
 
     /**
-     * Handle resuming after a page reload while submission was pending (Task 7)
-     * e.g., TikTok performed a full page navigation back to Campaigns page instead of SPA
+     * Handle resuming after TikTok redirects back to Campaigns page following Publish (Task 4 & 7)
+     * Detects Campaigns page -> waits 3s -> saves REFRESH_IN_PROGRESS -> triggers window.location.reload()
+     * Halts execution in the dying document; the reloaded document calls initialize().
      * @param {object} jobState
      * @param {object} config
      */
-    async handleSubmissionPendingResume(jobState, config) {
+    async handlePostPublishRedirectResume(jobState, config) {
       const h = this.helpers;
       const currentIndex = jobState.currentCampaignIndex || 1;
+      const totalCampaigns = jobState.totalCampaigns || 1;
       this.isProcessingLock = true;
       this.shouldAbort = false;
 
-      // Check if already returned to Campaigns page
-      if (h.isCampaignsManagementUrl() && h.findCampaignsManagementUI()) {
-        console.log('[NAVIGATION] Campaigns page detected');
-        console.log('[NAVIGATION] Waiting 3 seconds for page to settle');
-        await h.sleep(3000);
-
-        if (!h.isCampaignsManagementUrl() || !h.findCampaignsManagementUI()) {
-          const confirmed = await h.waitForCampaignsPage(5000);
-          if (!confirmed) {
-            console.log('[VERIFY] Submission could not be confirmed');
-            console.log('[RUNNER] NEEDS_VERIFICATION');
-            console.log('[RUNNER] Batch paused to prevent duplicates');
-            await this.storage?.updateJobState({
-              status: RUNNER_STATES.NEEDS_VERIFICATION,
-              lastError: 'Navigation away from Campaigns page'
-            });
-            this.currentState = RUNNER_STATES.NEEDS_VERIFICATION;
-            this.isProcessingLock = false;
-            return;
-          }
-        }
-
-        // Trigger single refresh
+      // 1. Wait for Campaigns page if not already active
+      if (!h.isCampaignsManagementUrl() || !h.findCampaignsManagementUI()) {
+        console.log('[NAVIGATION] Waiting for Campaigns page');
         await this.storage?.updateJobState({
-          refreshCheckpoint: 'REFRESH_IN_PROGRESS',
-          currentStep: WORKFLOW_STEPS.REFRESH_CAMPAIGNS
+          currentStep: WORKFLOW_STEPS.WAITING_FOR_CAMPAIGNS_PAGE,
+          stepDescription: `[#${currentIndex}] Waiting for return to Campaigns page...`
         });
-        console.log('[REFRESH] Campaigns page refresh started');
-        if (typeof window !== 'undefined' && window.location && typeof window.location.reload === 'function') {
-          window.location.reload();
-        }
-        await h.sleep(500);
-        const updatedJob = await this.storage?.getJobState();
-        if (updatedJob && updatedJob.refreshCheckpoint === 'REFRESH_IN_PROGRESS') {
-          await this.handlePostRefreshResume(updatedJob, config);
-        }
-      } else {
-        // Wait up to 30s for redirect
-        const reached = await h.waitForCampaignsPage(30000);
-        if (reached) {
-          console.log('[NAVIGATION] Campaigns page detected');
-          console.log('[NAVIGATION] Waiting 3 seconds for page to settle');
-          await h.sleep(3000);
-          console.log('[REFRESH] Campaigns page refresh started');
-          await this.storage?.updateJobState({
-            refreshCheckpoint: 'REFRESH_IN_PROGRESS',
-            currentStep: WORKFLOW_STEPS.REFRESH_CAMPAIGNS
-          });
-          if (typeof window !== 'undefined' && window.location && typeof window.location.reload === 'function') {
-            window.location.reload();
-          }
-          await h.sleep(500);
-          const updatedJob = await this.storage?.getJobState();
-          if (updatedJob && updatedJob.refreshCheckpoint === 'REFRESH_IN_PROGRESS') {
-            await this.handlePostRefreshResume(updatedJob, config);
-          }
-        } else {
+
+        const reached = await h.waitForCampaignsPage(35000);
+        if (!reached) {
           console.log('[VERIFY] Submission could not be confirmed');
           console.log('[RUNNER] NEEDS_VERIFICATION');
           console.log('[RUNNER] Batch paused to prevent duplicates');
           await this.storage?.updateJobState({
             status: RUNNER_STATES.NEEDS_VERIFICATION,
-            lastError: 'Submission could not be confirmed after reload.'
+            currentStep: WORKFLOW_STEPS.VERIFY_SUBMISSION,
+            lastError: 'Navigation timeout: Did not return to Campaigns page within timeout.'
           });
           this.currentState = RUNNER_STATES.NEEDS_VERIFICATION;
           this.isProcessingLock = false;
+          return;
         }
       }
+
+      console.log('[NAVIGATION] Campaigns page detected');
+      console.log('[NAVIGATION] Waiting 3 seconds');
+      await this.storage?.updateJobState({
+        currentStep: WORKFLOW_STEPS.SETTLING_AFTER_REDIRECT,
+        stepDescription: `[#${currentIndex}] Campaigns page detected. Waiting 3 seconds...`
+      });
+
+      await h.sleep(3000);
+
+      if (this.shouldAbort || h.isAborted()) {
+        this.isProcessingLock = false;
+        return;
+      }
+
+      // Confirm page is still on Campaigns management view
+      if (!h.isCampaignsManagementUrl() || !h.findCampaignsManagementUI()) {
+        const confirmed = await h.waitForCampaignsPage(5000);
+        if (!confirmed) {
+          console.log('[VERIFY] Submission could not be confirmed');
+          console.log('[RUNNER] NEEDS_VERIFICATION');
+          console.log('[RUNNER] Batch paused to prevent duplicates');
+          await this.storage?.updateJobState({
+            status: RUNNER_STATES.NEEDS_VERIFICATION,
+            currentStep: WORKFLOW_STEPS.VERIFY_SUBMISSION,
+            lastError: 'Left Campaigns page during settling.'
+          });
+          this.currentState = RUNNER_STATES.NEEDS_VERIFICATION;
+          this.isProcessingLock = false;
+          return;
+        }
+      }
+
+      // 2. Save REFRESH_IN_PROGRESS to persistent storage BEFORE refreshing
+      console.log('[REFRESH] Saving refresh checkpoint');
+      await this.storage?.updateJobState({
+        refreshCheckpoint: 'REFRESH_IN_PROGRESS',
+        currentStep: WORKFLOW_STEPS.REFRESH_CAMPAIGNS,
+        stepDescription: `[#${currentIndex}] Refreshing Campaigns page...`
+      });
+
+      console.log('[REFRESH] Full page reload initiated');
+
+      if (typeof window !== 'undefined' && window.location && typeof window.location.reload === 'function') {
+        window.location.reload();
+      }
+
+      // HALT execution in this frame. The refreshed content script will call initialize().
+      return;
+    }
+
+    /**
+     * Backward-compatible alias for handlePostPublishRedirectResume
+     */
+    async handleSubmissionPendingResume(jobState, config) {
+      return this.handlePostPublishRedirectResume(jobState, config);
     }
 
     /**
@@ -395,6 +451,13 @@
       this.isProcessingLock = true;
       this.shouldAbort = false;
 
+      // Log recovery
+      console.log('[RECOVERY] State restored');
+      if (totalCampaigns > 1) {
+        console.log('[RECOVERY] Content script initialized after reload');
+        console.log('[RECOVERY] Saved campaign index restored');
+      }
+
       // 1. Wait for Campaigns page to be fully interactive
       const isReady = await h.waitForCampaignsPage(20000);
       if (!isReady) {
@@ -411,13 +474,12 @@
         return;
       }
 
-      console.log('[REFRESH] Page loaded successfully');
-
-      // Update checkpoint to REFRESH_COMPLETED
+      // Update checkpoint to REFRESH_COMPLETED so we never refresh this campaign again
       await this.storage?.updateJobState({
         refreshCheckpoint: 'REFRESH_COMPLETED',
         currentStep: WORKFLOW_STEPS.VERIFY_SUBMISSION
       });
+      console.log('[REFRESH] Refresh completed');
 
       // 2. Verify submission using reliable evidence (TASK 5)
       const verifyResult = await c.verifySubmittedCampaign(jobState);
@@ -438,7 +500,8 @@
       }
 
       // Verification succeeded!
-      console.log('[VERIFY] Campaign submission verified');
+      console.log(`[VERIFY] Campaign ${currentIndex}/${totalCampaigns} verified`);
+      console.log(`[VERIFY] Campaign ${currentIndex}/${totalCampaigns} submission verified`);
       const currentJob = await this.storage?.getJobState();
       const successCount = (currentJob?.successfulCampaigns || 0) + 1;
 
@@ -447,21 +510,37 @@
         index: currentIndex,
         status: 'SUBMITTED',
         campaignId: verifyResult.campaignId || null,
+        campaignName: verifyResult.campaignName || currentJob?.expectedCampaignName || null,
         submittedAt: new Date().toISOString()
       });
+
+      const currentKnownIds = new Set(currentJob?.knownCampaignIds || []);
+      // STRICT IDENTITY SEPARATION: Only store numeric IDs in knownCampaignIds
+      if (verifyResult.campaignId && /^\d{16,19}$/.test(String(verifyResult.campaignId))) {
+        currentKnownIds.add(String(verifyResult.campaignId));
+      }
+
+      const currentKnownNames = new Set(currentJob?.knownCampaignNames || []);
+      const confirmedName = verifyResult.campaignName || currentJob?.expectedCampaignName;
+      if (confirmedName) {
+        currentKnownNames.add(confirmedName.toLowerCase());
+      }
 
       await this.storage?.updateJobState({
         successfulCampaigns: successCount,
         campaignResults: results,
+        knownCampaignIds: Array.from(currentKnownIds),
+        knownCampaignNames: Array.from(currentKnownNames),
         submissionStatus: 'NONE',
         refreshCheckpoint: 'NONE',
-        submissionEvidence: null
+        submissionEvidence: null,
+        expectedCampaignName: null
       });
-
-      console.log(`[RUNNER] Campaign ${currentIndex}/${totalCampaigns} completed`);
 
       // 3. Sequential Multi-Campaign Loop (TASK 6)
       if (currentIndex < totalCampaigns) {
+        const remaining = totalCampaigns - currentIndex;
+        console.log(`[RUNNER] Remaining campaigns: ${remaining}`);
         const nextIndex = currentIndex + 1;
         console.log(`[RUNNER] Starting Campaign ${nextIndex}/${totalCampaigns}`);
 
@@ -471,10 +550,15 @@
           stepDescription: `Starting Campaign ${nextIndex} of ${totalCampaigns}`
         });
 
-        // Continue loop with next campaign
-        await this.executeCampaignLoop(nextIndex, totalCampaigns, config);
+        // Continue loop with next campaign, ensuring config includes campaignCount = totalCampaigns
+        const nextConfig = {
+          ...config,
+          campaignCount: totalCampaigns
+        };
+        await this.executeCampaignLoop(nextIndex, totalCampaigns, nextConfig);
       } else {
         // All requested campaigns finished!
+        console.log('[RUNNER] All campaigns completed');
         await this.storage?.updateJobState({
           status: RUNNER_STATES.COMPLETED,
           currentStep: 'COMPLETED',
@@ -498,12 +582,14 @@
 
       try {
         // Step 1: Click Create
-        if (this.shouldAbort) return { success: false, aborted: true, error: 'Aborted' };
+        if (this.shouldAbort || h.isAborted()) return { success: false, aborted: true, error: 'Aborted' };
         await this.storage?.updateJobState({
           currentStep: WORKFLOW_STEPS.CLICK_CREATE,
           stepDescription: `[#${campaignIndex}] Clicking Create Campaign`
         });
+        console.log('[RUNNER] Clicking Create');
         await c.clickCreateCampaign();
+        console.log(`[RUNNER] Campaign ${campaignIndex} automation started`);
         await h.sleep(1500);
 
         // Step 2: Custom Mode Check
@@ -722,6 +808,11 @@
   global.AutomationRunner = automationRunnerInstance;
 
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { AutomationRunner: automationRunnerInstance, RUNNER_STATES, WORKFLOW_STEPS };
+    module.exports = {
+      AutomationRunner: automationRunnerInstance,
+      AutomationRunnerClass: AutomationRunner,
+      RUNNER_STATES,
+      WORKFLOW_STEPS
+    };
   }
 })(typeof globalThis !== 'undefined' ? globalThis : self);

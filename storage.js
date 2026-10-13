@@ -40,6 +40,10 @@
     updatedAt: null,
     liveMode: false,
     campaignResults: [],
+    knownCampaignIds: [],
+    knownCampaignNames: [],
+    expectedCampaignName: null,
+    advertiserId: null,
     submissionStatus: 'NONE', // 'NONE' | 'SUBMISSION_PENDING' | 'SUBMITTED' | 'FAILED' | 'NEEDS_VERIFICATION'
     submissionEvidence: null,
     refreshCheckpoint: 'NONE', // 'NONE' | 'REFRESH_IN_PROGRESS' | 'REFRESH_COMPLETED'
@@ -99,40 +103,64 @@
     },
 
     /**
+     * Check if the Chrome extension runtime context is valid
+     * @returns {boolean}
+     */
+    isContextValid() {
+      try {
+        return typeof chrome !== 'undefined' &&
+               !!chrome.runtime &&
+               !!chrome.runtime.id;
+      } catch (e) {
+        return false;
+      }
+    },
+
+    /**
      * Get stored configuration or fallback to defaults
      * Normalizes targetCountries to array
      * @returns {Promise<typeof DEFAULT_CONFIG>}
      */
     async getConfig() {
+      if (!this.isContextValid()) {
+        console.warn('[TikTokAdsBot:Storage] Extension context invalidated. Returning default configuration.');
+        return { ...DEFAULT_CONFIG };
+      }
+
       const sessionAuth = await this.getSessionAuthCode();
 
       return new Promise((resolve) => {
-        chrome.storage.local.get([STORAGE_KEYS.CONFIG], (result) => {
-          if (chrome.runtime.lastError) {
-            console.error('[TikTokAdsBot:Storage] Error loading config:', chrome.runtime.lastError);
-            resolve({ ...DEFAULT_CONFIG, authCode: sessionAuth || DEFAULT_CONFIG.authCode });
-            return;
-          }
-          const raw = result[STORAGE_KEYS.CONFIG] || {};
-          let targetCountries = raw.targetCountries;
-          if (!Array.isArray(targetCountries)) {
-            if (raw.targetCountry && typeof raw.targetCountry === 'string') {
-              targetCountries = [raw.targetCountry.trim()];
-            } else {
-              targetCountries = [...DEFAULT_CONFIG.targetCountries];
+        try {
+          chrome.storage.local.get([STORAGE_KEYS.CONFIG], (result) => {
+            if (chrome.runtime?.lastError) {
+              console.error('[TikTokAdsBot:Storage] Error loading config:', chrome.runtime.lastError);
+              resolve({ ...DEFAULT_CONFIG, authCode: sessionAuth || DEFAULT_CONFIG.authCode });
+              return;
             }
-          }
+            const raw = result?.[STORAGE_KEYS.CONFIG] || {};
+            let targetCountries = raw.targetCountries;
+            if (!Array.isArray(targetCountries)) {
+              if (raw.targetCountry && typeof raw.targetCountry === 'string') {
+                targetCountries = [raw.targetCountry.trim()];
+              } else {
+                targetCountries = [...DEFAULT_CONFIG.targetCountries];
+              }
+            }
 
-          // Prioritize sessionAuth if present, else fallback to raw.authCode
-          const authCode = sessionAuth || raw.authCode || '';
+            // Prioritize sessionAuth if present, else fallback to raw.authCode
+            const authCode = sessionAuth || raw.authCode || '';
 
-          resolve({
-            ...DEFAULT_CONFIG,
-            ...raw,
-            authCode,
-            targetCountries
+            resolve({
+              ...DEFAULT_CONFIG,
+              ...raw,
+              authCode,
+              targetCountries
+            });
           });
-        });
+        } catch (err) {
+          console.warn('[TikTokAdsBot:Storage] Failed reading config (context invalidated):', err);
+          resolve({ ...DEFAULT_CONFIG, authCode: sessionAuth || DEFAULT_CONFIG.authCode });
+        }
       });
     },
 
@@ -142,6 +170,11 @@
      * @returns {Promise<boolean>}
      */
     async saveConfig(config) {
+      if (!this.isContextValid()) {
+        console.warn('[TikTokAdsBot:Storage] Extension context invalidated. Cannot save config.');
+        return false;
+      }
+
       if (config.authCode !== undefined) {
         await this.saveSessionAuthCode(config.authCode);
       }
@@ -163,20 +196,25 @@
       };
 
       return new Promise((resolve) => {
-        chrome.storage.local.set({ [STORAGE_KEYS.CONFIG]: mergedConfig }, () => {
-          if (chrome.runtime.lastError) {
-            console.error('[TikTokAdsBot:Storage] Error saving config:', chrome.runtime.lastError);
-            resolve(false);
-            return;
-          }
-          // Mask authCode in console output
-          const safeLog = {
-            ...mergedConfig,
-            authCode: mergedConfig.authCode ? '***' + mergedConfig.authCode.slice(-4) : ''
-          };
-          console.log('[TikTokAdsBot:Storage] Configuration persisted:', safeLog);
-          resolve(true);
-        });
+        try {
+          chrome.storage.local.set({ [STORAGE_KEYS.CONFIG]: mergedConfig }, () => {
+            if (chrome.runtime?.lastError) {
+              console.error('[TikTokAdsBot:Storage] Error saving config:', chrome.runtime.lastError);
+              resolve(false);
+              return;
+            }
+            // Mask authCode in console output
+            const safeLog = {
+              ...mergedConfig,
+              authCode: mergedConfig.authCode ? '***' + mergedConfig.authCode.slice(-4) : ''
+            };
+            console.log('[TikTokAdsBot:Storage] Configuration persisted:', safeLog);
+            resolve(true);
+          });
+        } catch (err) {
+          console.warn('[TikTokAdsBot:Storage] Failed saving config (context invalidated):', err);
+          resolve(false);
+        }
       });
     },
 
@@ -185,15 +223,25 @@
      * @returns {Promise<typeof DEFAULT_JOB_STATE>}
      */
     async getJobState() {
+      if (!this.isContextValid()) {
+        console.warn('[TikTokAdsBot:Storage] Extension context invalidated. Returning default job state.');
+        return { ...DEFAULT_JOB_STATE };
+      }
+
       return new Promise((resolve) => {
-        chrome.storage.local.get([STORAGE_KEYS.JOB_STATE], (result) => {
-          if (chrome.runtime.lastError) {
-            console.error('[TikTokAdsBot:Storage] Error loading job state:', chrome.runtime.lastError);
-            resolve({ ...DEFAULT_JOB_STATE });
-            return;
-          }
-          resolve({ ...DEFAULT_JOB_STATE, ...(result[STORAGE_KEYS.JOB_STATE] || {}) });
-        });
+        try {
+          chrome.storage.local.get([STORAGE_KEYS.JOB_STATE], (result) => {
+            if (chrome.runtime?.lastError) {
+              console.error('[TikTokAdsBot:Storage] Error loading job state:', chrome.runtime.lastError);
+              resolve({ ...DEFAULT_JOB_STATE });
+              return;
+            }
+            resolve({ ...DEFAULT_JOB_STATE, ...(result?.[STORAGE_KEYS.JOB_STATE] || {}) });
+          });
+        } catch (err) {
+          console.warn('[TikTokAdsBot:Storage] Failed reading job state (context invalidated):', err);
+          resolve({ ...DEFAULT_JOB_STATE });
+        }
       });
     },
 
@@ -203,20 +251,30 @@
      * @returns {Promise<boolean>}
      */
     async saveJobState(jobState) {
+      if (!this.isContextValid()) {
+        console.warn('[TikTokAdsBot:Storage] Extension context invalidated. Cannot save job state.');
+        return false;
+      }
+
       const stateToSave = {
         ...DEFAULT_JOB_STATE,
         ...jobState,
         updatedAt: new Date().toISOString()
       };
       return new Promise((resolve) => {
-        chrome.storage.local.set({ [STORAGE_KEYS.JOB_STATE]: stateToSave }, () => {
-          if (chrome.runtime.lastError) {
-            console.error('[TikTokAdsBot:Storage] Error saving job state:', chrome.runtime.lastError);
-            resolve(false);
-            return;
-          }
-          resolve(true);
-        });
+        try {
+          chrome.storage.local.set({ [STORAGE_KEYS.JOB_STATE]: stateToSave }, () => {
+            if (chrome.runtime?.lastError) {
+              console.error('[TikTokAdsBot:Storage] Error saving job state:', chrome.runtime.lastError);
+              resolve(false);
+              return;
+            }
+            resolve(true);
+          });
+        } catch (err) {
+          console.warn('[TikTokAdsBot:Storage] Failed saving job state (context invalidated):', err);
+          resolve(false);
+        }
       });
     },
 
@@ -226,6 +284,11 @@
      * @returns {Promise<typeof DEFAULT_JOB_STATE>}
      */
     async updateJobState(partialState) {
+      if (!this.isContextValid()) {
+        console.warn('[TikTokAdsBot:Storage] Extension context invalidated. Cannot update job state.');
+        return { ...DEFAULT_JOB_STATE, ...partialState };
+      }
+
       const currentState = await this.getJobState();
       const updatedState = {
         ...currentState,

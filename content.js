@@ -33,6 +33,22 @@
     }
   }
 
+  function isExtensionContextValid() {
+    try {
+      return typeof chrome !== 'undefined' &&
+             !!chrome.runtime &&
+             !!chrome.runtime.id;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Abort if extension context is already invalidated
+  if (!isExtensionContextValid()) {
+    console.warn('[TikTokAdsBot:Content] Extension context invalidated on script load. Tab refresh required.');
+    return;
+  }
+
   window.__TIKTOK_ADS_BOT_INJECTED__ = true;
 
   log(`Content script successfully initialized on: ${window.location.href}`);
@@ -42,6 +58,10 @@
    */
   async function init() {
     try {
+      if (!isExtensionContextValid()) {
+        console.warn('[TikTokAdsBot:Content] Extension context invalidated before init.');
+        return;
+      }
       // 1. Initialize Runner state from storage (and handle post-reload/navigation resume)
       if (window.AutomationRunner) {
         await window.AutomationRunner.initialize();
