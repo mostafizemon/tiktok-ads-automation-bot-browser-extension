@@ -930,20 +930,100 @@
       for (const type of ['mousedown', 'mouseup']) {
         background.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
       }
+      input.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
       input.blur();
       background.click();
+
+      // In real browser environments, also dispatch outside click on an empty non-interactive container
+      try {
+        const emptyArea = document.querySelector('.byted-layout, .spp-layout, #app, form, section');
+        if (emptyArea && emptyArea !== background && !emptyArea.matches('button, a, input, select, textarea, [role="button"], [role="radio"]')) {
+          for (const type of ['mousedown', 'mouseup']) {
+            emptyArea.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+          }
+        }
+      } catch (_) {}
+
       console.log('[BUDGET] Clicked outside budget input');
+    }
+
+    /**
+     * Type budget value into input field with React/synthetic event support
+     * @param {HTMLInputElement} input
+     * @param {string} valueStr
+     */
+    typeBudgetValue(input, valueStr) {
+      input.focus();
+      try {
+        if (typeof FocusEvent !== 'undefined') {
+          input.dispatchEvent(new FocusEvent('focusin', { bubbles: true, composed: true }));
+          input.dispatchEvent(new FocusEvent('focus', { bubbles: true, composed: true }));
+        }
+      } catch (_) {}
+
+      if (typeof input.select === 'function') {
+        try { input.select(); } catch (_) {}
+      }
+
+      // React tracker synchronization if present
+      if (input._valueTracker) {
+        input._valueTracker.setValue('');
+      }
+
+      try {
+        if (typeof InputEvent !== 'undefined') {
+          input.dispatchEvent(new InputEvent('beforeinput', {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            data: valueStr,
+            inputType: 'insertText'
+          }));
+        }
+      } catch (_) {}
+
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement?.prototype || {},
+        'value'
+      )?.set;
+
+      if (nativeSetter) {
+        nativeSetter.call(input, valueStr);
+      } else {
+        input.value = valueStr;
+      }
+
+      try {
+        if (typeof InputEvent !== 'undefined') {
+          input.dispatchEvent(new InputEvent('input', {
+            bubbles: true,
+            composed: true,
+            data: valueStr,
+            inputType: 'insertText'
+          }));
+        } else {
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        }
+      } catch (_) {
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      }
+
+      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      input.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
+      input.blur();
     }
 
     /**
      * Enter budget value, verify numeric match, and check TikTok validation errors:
      * - Focus the input
-     * - Set budget using native HTMLInputElement value setter
+     * - Type budget using native HTMLInputElement value setter and React tracker sync
      * - Dispatch input, change, and blur events with bubbling and composition
+     * - Click outside in an empty space to commit value
      * - Wait for TikTok validation
      * - Verify displayed numeric value matches configuration
      * - Check validation errors inside: #cbo-daily-budget .vi-form-item__error
-     * - Respect TikTok minimum and maximum validation without silent adjustment
+     * - If a transient validation error is detected (e.g. "between 20.00 and 9,999,999.99"),
+     *   re-click into the input field and click an empty space to clear it
      * @param {HTMLInputElement} input
      * @param {string} budgetFormatted
      * @returns {Promise<boolean>}
@@ -955,40 +1035,22 @@
       input.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await h.sleep(200);
 
-      // 14. Focus the input
+      // 14. Focus and type into the input
       if (h.isAborted()) throw new Error('Automation aborted or paused by user');
       h.safeClick(input, 'Daily budget input');
-      input.focus();
+      this.typeBudgetValue(input, budgetFormatted);
 
-      // 15. Set budget using native HTMLInputElement value setter
-      const nativeSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype,
-        'value'
-      )?.set;
-
-      if (nativeSetter) {
-        nativeSetter.call(input, budgetFormatted);
-      } else {
-        input.value = budgetFormatted;
-      }
-
-      // 16. Dispatch appropriate input/change events with bubbling & composed
-      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-
-      // 17. Trigger blur
-      input.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
-      input.blur();
+      // 15. Click outside in an empty area to commit
       this.clickOutsideBudgetInput(input);
 
       console.log('[BUDGET] Value entered');
       this.diag(stepName, `Entered budget value: ${budgetFormatted}`);
 
-      // 18. Wait for TikTok's validation to complete
+      // 16. Wait for TikTok's validation to complete
       await h.sleep(600);
       input = await this.locateNestedShadowBudgetInput();
 
-      // 19. Verify the displayed numeric value matches the configured budget
+      // 17. Verify the displayed numeric value matches the configured budget
       let actualVal = (input.value || '').trim();
       let numericActual = parseFloat(actualVal.replace(/[^0-9.]/g, ''));
       const numericExpected = parseFloat(budgetFormatted);
@@ -997,16 +1059,7 @@
         // Retry entry once
         if (h.isAborted()) throw new Error('Automation aborted or paused by user');
         h.safeClick(input, 'Daily budget input');
-        input.focus();
-        if (nativeSetter) {
-          nativeSetter.call(input, budgetFormatted);
-        } else {
-          input.value = budgetFormatted;
-        }
-        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-        input.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
-        input.blur();
+        this.typeBudgetValue(input, budgetFormatted);
         this.clickOutsideBudgetInput(input);
         await h.sleep(500);
         input = await this.locateNestedShadowBudgetInput();
@@ -1025,19 +1078,50 @@
       console.log('[BUDGET] Numeric value verified');
       this.diag(stepName, `Numeric value verified: ${budgetFormatted}`);
 
-      // 20-22. Check validation errors inside: #cbo-daily-budget .vi-form-item__error
-      // Respect actual minimum and maximum shown by TikTok (e.g. "Your budget must be a number between 20.00 and 9,999,999.99.")
-      // Do not silently adjust the user's requested amount
-      // Do not click Continue if the budget is missing, invalid, or not verified
-      const errorContainers = h.queryShadowAll('#cbo-daily-budget .vi-form-item__error, .vi-form-item__error');
-      for (const errEl of errorContainers) {
-        if (h.isVisible(errEl)) {
-          const errText = (errEl.innerText || errEl.textContent || '').trim();
-          if (errText.length > 0) {
-            this.diag(stepName, `TikTok budget validation error: "${errText}"`, { error: errText });
-            throw new Error(`TikTok budget validation error: ${errText}`);
+      // Helper to find visible errors in DOM/Shadow DOM
+      const getVisibleErrors = () => {
+        const errorContainers = h.queryShadowAll('#cbo-daily-budget .vi-form-item__error, .vi-form-item__error');
+        return errorContainers.filter(errEl => {
+          if (!h.isVisible(errEl)) return false;
+          const text = (errEl.innerText || errEl.textContent || '').trim();
+          return text.length > 0;
+        });
+      };
+
+      let visibleErrors = getVisibleErrors();
+
+      // 18. If a validation error is detected (such as "Your budget must be a number between 20.00 and 9,999,999.99.")
+      // but the numeric value is valid (e.g. >= 20.00), handle TikTok's transient validation state:
+      // Real-browser testing confirmed: clicking the input field and then clicking in an empty space clears this error.
+      if (visibleErrors.length > 0 && !isNaN(numericActual) && numericActual >= 20.00 && numericActual <= 9999999.99) {
+        for (let retry = 1; retry <= 2; retry++) {
+          const firstErrText = (visibleErrors[0].innerText || visibleErrors[0].textContent || '').trim();
+          console.log(`[BUDGET] Transient validation error detected ("${firstErrText}"). Clicking input and empty area to clear (attempt ${retry}/2)...`);
+          this.diag(stepName, 'Re-clicking input and empty area to clear transient validation error', { error: firstErrText, attempt: retry });
+
+          if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+          input = await this.locateNestedShadowBudgetInput();
+          h.safeClick(input, 'Daily budget input');
+          this.typeBudgetValue(input, budgetFormatted);
+          await h.sleep(200);
+
+          this.clickOutsideBudgetInput(input);
+          await h.sleep(600);
+
+          visibleErrors = getVisibleErrors();
+          if (visibleErrors.length === 0) {
+            console.log('[BUDGET] Validation error cleared successfully');
+            this.diag(stepName, 'Budget validation error successfully cleared after re-clicking input and empty area');
+            break;
           }
         }
+      }
+
+      // 19. If errors remain after retry, throw error
+      if (visibleErrors.length > 0) {
+        const errText = (visibleErrors[0].innerText || visibleErrors[0].textContent || '').trim();
+        this.diag(stepName, `TikTok budget validation error: "${errText}"`, { error: errText });
+        throw new Error(`TikTok budget validation error: ${errText}`);
       }
 
       console.log('[BUDGET] Validation passed');

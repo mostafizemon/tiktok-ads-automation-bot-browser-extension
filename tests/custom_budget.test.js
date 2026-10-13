@@ -349,5 +349,33 @@ async function test(name, fn) {
     assert.throws(() => e.campaign.clickOutsideBudgetInput(e.input), /aborted/);
     assert.strictEqual(e.document.body.clicks, 0);
   });
+  await test('Transient budget validation error is cleared by re-clicking input and empty area', async e => {
+    objective(e);
+    const errorEl = e.section.appendChild(new Node('div', { class: 'vi-form-item__error' }, 'Your budget must be a number between 20.00 and 9,999,999.99.'));
+    let inputClicks = 0;
+    let outsideClicks = 0;
+    e.input.onClick = () => { inputClicks++; };
+    e.document.body.onClick = () => {
+      outsideClicks++;
+      if (inputClicks >= 2 && outsideClicks >= 2) {
+        errorEl.text = '';
+      }
+    };
+    let continued = false;
+    e.campaign.clickContinueAndVerifyDemographics = async () => { continued = true; };
+    await e.campaign.selectTrafficObjectiveAndBudget({ dailyBudget: 100 });
+    assert.strictEqual(continued, true);
+    assert.ok(inputClicks >= 2);
+    assert.ok(outsideClicks >= 2);
+  });
+  await test('Persistent budget validation error fails after retrying input and outside clicks', async e => {
+    objective(e);
+    e.section.appendChild(new Node('div', { class: 'vi-form-item__error' }, 'Your budget must be a number between 20.00 and 9,999,999.99.'));
+    await assert.rejects(
+      e.campaign.selectTrafficObjectiveAndBudget({ dailyBudget: 100 }),
+      /TikTok budget validation error: Your budget must be a number between 20.00 and 9,999,999.99/
+    );
+  });
   console.log(`CUSTOM BUDGET TEST RESULTS: ${passed} PASSED, ${failed} FAILED`); if (failed) process.exitCode = 1;
 })();
+
