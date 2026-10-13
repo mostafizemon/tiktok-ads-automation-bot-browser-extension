@@ -335,6 +335,15 @@
      */
     findTrafficRadioLabel() {
       const h = this.helpers;
+      // Rebate accounts append a badge to the title ("Traffic Rebate offer").
+      // Use the supplied objective metadata before the legacy exact-title fallback.
+      // Do not use objective_type alone: Sales also exposes objective_type="1".
+      const wrappers = h.queryShadowAll('[data-tea-objective-content="Traffic"]');
+      for (const wrapper of wrappers) {
+        if (wrapper.getAttribute('data-tea-objective-value') !== '1') continue;
+        const label = h.queryShadow('label[role="radio"]', wrapper);
+        if (label && h.isVisible(label)) return label;
+      }
       const radioLabels = h.queryShadowAll('label[role="radio"], [role="radio"]');
       const matches = [];
 
@@ -499,12 +508,13 @@
       const campaign = this.findCampaignBudgetRadio();
       const parent = node => node.parentElement || node.getRootNode()?.host;
       let section = null;
-      for (let node = campaign && parent(campaign); node; node = parent(node)) {
+      for (let node = campaign; node; node = parent(node)) {
         if (node.matches('body, html, form')) break;
         const budgetAnchor = h.queryShadow(
           '[data-testid="create_campaign_CBO_daily_budget"], [data-testid="campaign_settings_budgetCboSelect"], #cbo-daily-budget', node
         );
-        if (budgetAnchor || node.matches('section, fieldset, [role="group"]')) {
+        if (budgetAnchor || (node === campaign && h.queryShadow('[role="radiogroup"]', node)) ||
+            node.matches('section, fieldset, [role="group"]')) {
           section = node;
           break;
         }
@@ -522,8 +532,12 @@
         const root = radio.getRootNode();
         const labelledBy = (radio.getAttribute('aria-labelledby') || '').split(/\s+/)
           .map(id => root.getElementById?.(id)?.textContent || '').join(' ');
+        // The supplied label also contains the complete budget form and rebate notice.
+        // Read only its own title span, not the combined descendant text.
+        const labelContent = Array.from(label?.children || []).find(node => node.classList.contains('vi-radio__label'));
+        const title = Array.from(labelContent?.children || []).find(node => node.tagName === 'SPAN');
         const name = radio.getAttribute('aria-label') || labelledBy.trim() ||
-          labels.map(item => item.textContent).join(' ') || label?.textContent || radio.textContent;
+          title?.textContent || labels.map(item => item.textContent).join(' ') || label?.textContent || radio.textContent;
         const target = label || labels.find(item => h.isVisible(item)) || radio;
         if (normalize(name) !== 'Custom budget' || !h.isVisible(target)) continue;
         const controls = [target, radio, ...h.queryShadowAll('input[type="radio"], [role="radio"]', target)];
@@ -720,6 +734,12 @@
                    document.querySelector('[data-testid*="budgetCboSelect"]') ||
                    h.queryShadow('[data-testid*="budgetCboSelect"]');
         if (selectEl && h.isVisible(selectEl)) break;
+        selectEl = null; // Hidden legacy controls must not make the dropdown mandatory.
+        if (this.findAvailableDailyBudgetInput()) {
+          console.log('[BUDGET] Daily mode verified');
+          this.diag(stepName, 'Daily mode verified by usable input inside the daily-specific budget host/container');
+          return true;
+        }
         await h.sleep(300);
       }
 
@@ -735,19 +755,10 @@
       };
 
       if (!selectEl) {
-        // Fallback: check if the daily budget input host already exists in DOM
-        const dailyHost = document.querySelector('[data-testid="create_campaign_CBO_daily_budget"]') ||
-                          h.queryShadow('[data-testid="create_campaign_CBO_daily_budget"]');
-        if (dailyHost) {
-          console.log('[BUDGET] Daily mode verified');
-          this.diag(stepName, 'Daily mode verified (default daily input host present)');
-          return true;
-        }
-
-        this.diag(stepName, 'Budget mode dropdown not found', {
-          error: 'Dropdown [data-testid="campaign_settings_budgetCboSelect"] missing'
+        this.diag(stepName, 'Daily budget interface unresolved', {
+          error: 'No visible budget mode dropdown or usable input in the daily-specific budget host/container after waiting'
         });
-        throw new Error('Budget Mode dropdown could not be found.');
+        throw new Error('Daily budget interface could not be verified: no visible Budget Mode dropdown or usable Daily Budget input after waiting.');
       }
 
       if (isDailySelected(selectEl)) {
@@ -815,14 +826,10 @@
       }
 
       if (!verifiedDaily) {
-        const dailyHost = document.querySelector('[data-testid="create_campaign_CBO_daily_budget"]') ||
-                          h.queryShadow('[data-testid="create_campaign_CBO_daily_budget"]');
-        if (!dailyHost) {
-          this.diag(stepName, 'Daily mode verification failed', {
-            error: 'Dropdown did not switch to Daily'
-          });
-          throw new Error('Failed to verify Daily budget mode was selected.');
-        }
+        this.diag(stepName, 'Daily mode verification failed', {
+          error: 'Dropdown did not switch to Daily'
+        });
+        throw new Error('Failed to verify Daily budget mode was selected.');
       }
 
       console.log('[BUDGET] Daily mode verified');
@@ -842,9 +849,60 @@
      * - Do not depend on dynamic custom-element tag suffixes (e.g. -s5lfyjk4)
      * - Use stable data-testid and x-name attributes
      * - Bounded waiting
-     * @param {number} [timeoutMs=10000]
-     * @returns {Promise<HTMLInputElement>}
+     * @returns {HTMLInputElement|null}
      */
+    // The daily-specific host/container is the mode evidence; require an actual usable input.
+    findAvailableDailyBudgetInput() {
+      const h = this.helpers;
+      const stepName = 'NESTED_BUDGET_INPUT';
+      // 9. Find Budget Input host using stable data-testid or x-name
+      const host1 = document.querySelector('[data-testid="create_campaign_CBO_daily_budget"]') ||
+                    h.queryShadow('[data-testid="create_campaign_CBO_daily_budget"]') ||
+                    document.querySelector('#cbo-daily-budget [x-name="x-input-number"]') ||
+                    h.queryShadow('#cbo-daily-budget [x-name="x-input-number"]');
+
+      if (host1 && host1.shadowRoot) {
+        // 10. Access the first open shadowRoot
+        const root1 = host1.shadowRoot;
+
+        // 11. Find the nested element: [x-name="x-input"]
+        const host2 = root1.querySelector('[x-name="x-input"]') ||
+                      root1.querySelector('x-input, [class*="x-input"]');
+
+        if (host2 && host2.shadowRoot) {
+          // 12. Access its second open shadowRoot
+          const root2 = host2.shadowRoot;
+
+          // 13. Locate input[part="input"]
+          const input = root2.querySelector('input[part="input"]') ||
+                        root2.querySelector('input.input') ||
+                        root2.querySelector('input[type="text"]') ||
+                        root2.querySelector('input');
+
+          if (input && h.isVisible(input) && !input.disabled && !input.readOnly) {
+            console.log('[BUDGET] Nested Shadow DOM input found');
+            this.diag(stepName, 'Nested Shadow DOM budget input found', {
+              host1: host1.getAttribute('data-testid') || host1.tagName,
+              host2: host2.getAttribute('x-name') || host2.tagName,
+              inputPart: input.getAttribute('part')
+            });
+            return input;
+          }
+        }
+      }
+
+      // Direct fallback piercing host1 if shadow hierarchy differs slightly
+      if (host1) {
+        const fallbackInput = h.queryShadow('input[part="input"], input.input, input[type="text"]', host1.shadowRoot || host1);
+        if (fallbackInput && h.isVisible(fallbackInput) && !fallbackInput.disabled && !fallbackInput.readOnly) {
+          console.log('[BUDGET] Nested Shadow DOM input found');
+          this.diag(stepName, 'Budget input found via shadow fallback traversal');
+          return fallbackInput;
+        }
+      }
+      return null;
+    }
+
     async locateNestedShadowBudgetInput(timeoutMs = 10000) {
       const h = this.helpers;
       const stepName = 'NESTED_BUDGET_INPUT';
@@ -853,51 +911,8 @@
       while (Date.now() - start < timeoutMs) {
         if (h.isAborted()) throw new Error('Automation aborted or paused by user');
 
-        // 9. Find Budget Input host using stable data-testid or x-name
-        const host1 = document.querySelector('[data-testid="create_campaign_CBO_daily_budget"]') ||
-                      h.queryShadow('[data-testid="create_campaign_CBO_daily_budget"]') ||
-                      document.querySelector('#cbo-daily-budget [x-name="x-input-number"]') ||
-                      h.queryShadow('#cbo-daily-budget [x-name="x-input-number"]');
-
-        if (host1 && host1.shadowRoot) {
-          // 10. Access the first open shadowRoot
-          const root1 = host1.shadowRoot;
-
-          // 11. Find the nested element: [x-name="x-input"]
-          const host2 = root1.querySelector('[x-name="x-input"]') ||
-                        root1.querySelector('x-input, [class*="x-input"]');
-
-          if (host2 && host2.shadowRoot) {
-            // 12. Access its second open shadowRoot
-            const root2 = host2.shadowRoot;
-
-            // 13. Locate input[part="input"]
-            const input = root2.querySelector('input[part="input"]') ||
-                          root2.querySelector('input.input') ||
-                          root2.querySelector('input[type="text"]') ||
-                          root2.querySelector('input');
-
-            if (input && h.isVisible(input)) {
-              console.log('[BUDGET] Nested Shadow DOM input found');
-              this.diag(stepName, 'Nested Shadow DOM budget input found', {
-                host1: host1.getAttribute('data-testid') || host1.tagName,
-                host2: host2.getAttribute('x-name') || host2.tagName,
-                inputPart: input.getAttribute('part')
-              });
-              return input;
-            }
-          }
-        }
-
-        // Direct fallback piercing host1 if shadow hierarchy differs slightly
-        if (host1) {
-          const fallbackInput = h.queryShadow('input[part="input"], input.input, input[type="text"]', host1);
-          if (fallbackInput && h.isVisible(fallbackInput)) {
-            console.log('[BUDGET] Nested Shadow DOM input found');
-            this.diag(stepName, 'Budget input found via shadow fallback traversal');
-            return fallbackInput;
-          }
-        }
+        const input = this.findAvailableDailyBudgetInput();
+        if (input) return input;
 
         await h.sleep(300);
       }
@@ -906,6 +921,18 @@
         error: 'Could not traverse shadow roots to input[part="input"]'
       });
       throw new Error('Nested Shadow DOM budget input field could not be found.');
+    }
+
+    clickOutsideBudgetInput(input) {
+      if (this.helpers.isAborted()) throw new Error('Automation aborted or paused by user');
+      // Target the page background itself. safeClick(body) could resolve a child button.
+      const background = document.body;
+      for (const type of ['mousedown', 'mouseup']) {
+        background.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+      }
+      input.blur();
+      background.click();
+      console.log('[BUDGET] Clicked outside budget input');
     }
 
     /**
@@ -929,6 +956,8 @@
       await h.sleep(200);
 
       // 14. Focus the input
+      if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+      h.safeClick(input, 'Daily budget input');
       input.focus();
 
       // 15. Set budget using native HTMLInputElement value setter
@@ -950,12 +979,14 @@
       // 17. Trigger blur
       input.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
       input.blur();
+      this.clickOutsideBudgetInput(input);
 
       console.log('[BUDGET] Value entered');
       this.diag(stepName, `Entered budget value: ${budgetFormatted}`);
 
       // 18. Wait for TikTok's validation to complete
       await h.sleep(600);
+      input = await this.locateNestedShadowBudgetInput();
 
       // 19. Verify the displayed numeric value matches the configured budget
       let actualVal = (input.value || '').trim();
@@ -964,6 +995,9 @@
 
       if (isNaN(numericActual) || Math.abs(numericActual - numericExpected) > 0.01) {
         // Retry entry once
+        if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+        h.safeClick(input, 'Daily budget input');
+        input.focus();
         if (nativeSetter) {
           nativeSetter.call(input, budgetFormatted);
         } else {
@@ -973,7 +1007,9 @@
         input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         input.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
         input.blur();
+        this.clickOutsideBudgetInput(input);
         await h.sleep(500);
+        input = await this.locateNestedShadowBudgetInput();
 
         actualVal = (input.value || '').trim();
         numericActual = parseFloat(actualVal.replace(/[^0-9.]/g, ''));
@@ -1034,7 +1070,7 @@
         const demoHeader = h.queryShadow('#section_dom_id_targetingDemographics, [id*="targetingDemographics"]');
         const locationDropdown = h.queryShadow('#fieldRenderer-particleLocations, [data-testid="lego-antd-select"]');
 
-        if ((demoHeader && h.isVisible(demoHeader)) || (locationDropdown && h.isVisible(locationDropdown))) {
+        if ((demoHeader && h.isVisible(demoHeader)) || this.findAudienceControlsHeading() || (locationDropdown && h.isVisible(locationDropdown))) {
           demographicsDetected = true;
           break;
         }
@@ -1067,6 +1103,61 @@
       return true;
     }
 
+    findAudienceControlsHeading() {
+      return this.helpers.queryShadowAll('[data-testid="lego-content-slot-panel-title-Audience controls"]')
+        .find(node => this.helpers.isVisible(node)) || null;
+    }
+
+    async ensureCountryTargetingSectionOpen(timeoutMs = 8000) {
+      const h = this.helpers;
+      const start = Date.now();
+      let clicked = false;
+      while (Date.now() - start < timeoutMs) {
+        if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+        const demo = h.queryShadowAll('#section_dom_id_targetingDemographics, [id*="targetingDemographics"]')
+          .find(node => h.isVisible(node));
+        const heading = demo || this.findAudienceControlsHeading();
+        if (heading) {
+          const panel = heading.closest('[data-lego-collapse-aria-expanded]');
+          const expanded = panel?.getAttribute('data-lego-collapse-aria-expanded');
+          if (demo) {
+            // Preserve the existing Demographics path when available.
+            if (expanded === 'false' && !clicked) {
+              await h.sleep(300);
+              if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+              h.safeClick(heading, 'Demographics section header');
+              await h.sleep(600);
+            }
+            return;
+          }
+          // A read-only Locations summary is not the editable country field.
+          const location = panel && h.queryShadow('#fieldRenderer-particleLocations', panel);
+          // The supplied field wrapper uses display: contents and has no layout box.
+          // Test the actual interactive dropdown instead of the wrapper's dimensions.
+          const locationTrigger = location && h.queryShadow('[data-testid="lego-antd-select"]', location);
+          if (expanded === 'true' && locationTrigger && h.isVisible(locationTrigger)) {
+            console.log('[TARGETING] Audience controls ready');
+            return;
+          }
+          if (expanded === 'false' && !clicked) {
+            await h.sleep(100);
+            if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+            if (panel.getAttribute('data-lego-collapse-aria-expanded') === 'false') {
+              h.safeClick(heading, 'Audience controls section header');
+              console.log('[TARGETING] Audience controls clicked');
+              clicked = true;
+            }
+          }
+        } else {
+          const location = h.queryShadow('#fieldRenderer-particleLocations');
+          const locationTrigger = location && h.queryShadow('[data-testid="lego-antd-select"]', location);
+          if (locationTrigger && h.isVisible(locationTrigger)) return;
+        }
+        await h.sleep(200);
+      }
+      throw new Error('Targeting section unavailable: expected Demographics or expanded Audience controls with an editable Locations field.');
+    }
+
     /**
      * Step 4: Demographics & Country Targeting
      * Implements REAL verified HTML selectors:
@@ -1087,26 +1178,8 @@
 
       this.diag(stepName, `Configuring target countries: ${JSON.stringify(targetCountries)}`);
 
-      // 1. Expand Demographics section if collapsed
-      const demoHeading = await h.waitForVisibleElement('#section_dom_id_targetingDemographics, [id*="targetingDemographics"]', 8000);
-      if (demoHeading) {
-        demoHeading.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        await h.sleep(300);
-
-        const collapseContainer = demoHeading.closest('[data-lego-collapse-aria-expanded]') ||
-                                  document.querySelector('[data-lego-collapse-aria-expanded]');
-
-        if (collapseContainer) {
-          const isExpanded = collapseContainer.getAttribute('data-lego-collapse-aria-expanded') === 'true';
-          if (!isExpanded) {
-            this.diag(stepName, 'Expanding collapsed Demographics section', {
-              elementFound: 'data-lego-collapse-aria-expanded=false'
-            });
-            h.safeClick(demoHeading, 'Demographics section header');
-            await h.sleep(600);
-          }
-        }
-      }
+      // Open the account's targeting variant before using the unchanged country workflow.
+      await this.ensureCountryTargetingSectionOpen();
 
       // 2. Manage existing selected tags:
       // Remove unwanted default countries, retain requested ones

@@ -107,6 +107,20 @@ function realBudgetGroup(e, { selected = false, testId = 'radio-radio-group-n3ki
   custom.onClick = () => { custom.attrs['aria-checked'] = 'true'; custom.attrs.class = 'vi-radio is-checked'; };
   return { group, recommended, custom };
 }
+// Objective wrapper and nested rebate tag from the user's failing account.
+function objective(e, name = 'Traffic', value = '1', selected = true, badge = true) {
+  const wrapper = e.document.body.appendChild(new Node('div', {
+    'data-testid': `campaign_objective_updateObjectiveType${value}`,
+    'data-tea-objective-content': name, 'data-tea-objective-value': value,
+    'data-tea-objective_type': '1'
+  }));
+  const label = wrapper.appendChild(new Node('label', { role: 'radio', class: selected ? 'vi-radio is-checked' : 'vi-radio', 'aria-checked': String(selected) }));
+  label.appendChild(new Node('input', { type: 'radio', value }));
+  const title = label.appendChild(new Node('span', { class: 'index_title_Nvlf1' }, ` ${name} `));
+  if (badge) title.appendChild(new Node('ks-tag-52wkm9ge', {}, ' Rebate offer '));
+  label.onClick = () => { label.attrs['aria-checked'] = 'true'; };
+  return { wrapper, label };
+}
 let passed = 0, failed = 0;
 async function test(name, fn) {
   const oldNow = Date.now;
@@ -210,6 +224,130 @@ async function test(name, fn) {
       });
     };
     await e.campaign.configureCampaignBudget(25); assert.strictEqual(state.custom.clicks, 1); assert.strictEqual(e.input.value, '25.00');
+  });
+  await test('Custom budget without dropdown uses verified daily input immediately', async e => {
+    const select = e.section.querySelector('[data-testid="campaign_settings_budgetCboSelect"]');
+    e.section.children = e.section.children.filter(node => node !== select);
+    realBudgetGroup(e); const start = e.now();
+    await e.campaign.configureCampaignBudget(36.75);
+    assert.strictEqual(e.input.value, '36.75'); assert.ok(e.now() - start < 8000);
+  });
+  await test('Hidden legacy dropdown does not block Custom daily input', async e => {
+    const select = e.section.querySelector('[data-testid="campaign_settings_budgetCboSelect"]'); select.visible = false;
+    realBudgetGroup(e); await e.campaign.configureCampaignBudget(31); assert.strictEqual(select.clicks, 0); assert.strictEqual(e.input.value, '31.00');
+  });
+  await test('No-dropdown daily input can render asynchronously', async e => {
+    e.section.querySelector('[data-testid="campaign_settings_budgetCboSelect"]').visible = false;
+    e.inputHost.shadowRoot = null; realBudgetGroup(e);
+    e.later(3000, () => e.renderInput());
+    await e.campaign.configureCampaignBudget(42); assert.strictEqual(e.input.value, '42.00');
+  });
+  await test('Neither dropdown nor usable daily input gives bounded diagnostic', async e => {
+    e.section.querySelector('[data-testid="campaign_settings_budgetCboSelect"]').visible = false;
+    e.inputHost.shadowRoot = null;
+    await assert.rejects(e.campaign.configureCampaignBudget(25), /Daily budget interface could not be verified/);
+    assert.strictEqual(e.input.value, '');
+  });
+  await test('Unverified Lifetime input is never filled', async e => {
+    e.section.querySelector('[data-testid="campaign_settings_budgetCboSelect"]').visible = false;
+    e.inputHost.attrs['data-testid'] = 'lifetime-budget';
+    await assert.rejects(e.campaign.configureCampaignBudget(25), /Daily budget interface could not be verified/);
+    assert.strictEqual(e.input.value, '');
+  });
+  await test('Visible Lifetime dropdown switches to Daily before input entry', async e => {
+    const select = e.section.querySelector('[data-testid="campaign_settings_budgetCboSelect"]'); select.text = 'Lifetime';
+    const option = e.section.appendChild(new Node('div', { 'data-testid': 'campaign_settings_budgetCboOption3' }, 'Daily'));
+    option.visible = false; select.onClick = () => { option.visible = true; };
+    option.onClick = () => { assert.strictEqual(e.input.value, ''); select.text = 'Daily'; e.renderInput(); };
+    realBudgetGroup(e); await e.campaign.configureCampaignBudget(28.5);
+    assert.strictEqual(select.clicks, 1); assert.strictEqual(option.clicks, 1); assert.strictEqual(e.input.value, '28.50');
+  });
+  await test('Failed dropdown transition is not overridden by a stale daily host', async e => {
+    const select = e.section.querySelector('[data-testid="campaign_settings_budgetCboSelect"]'); select.text = 'Lifetime';
+    e.section.appendChild(new Node('div', { 'data-testid': 'campaign_settings_budgetCboOption3' }, 'Daily'));
+    await assert.rejects(e.campaign.configureCampaignBudget(25), /Failed to verify Daily/); assert.strictEqual(e.input.value, '');
+  });
+  for (const selected of [false, true]) {
+    await test(`Full nested Campaign label with Custom selected=${selected}`, async e => {
+      const state = realBudgetGroup(e, { selected });
+      // Reproduce the supplied hierarchy: Campaign label > group > Custom label > form.
+      e.section.children = e.section.children.filter(node => node !== state.group);
+      e.campaignRadio.appendChild(state.group);
+      const title = state.custom.children.find(node => node.tagName === 'SPAN');
+      state.custom.children = state.custom.children.filter(node => node !== title);
+      const content = state.custom.appendChild(new Node('span', { class: 'vi-radio__label' }));
+      content.appendChild(title);
+      const details = content.appendChild(new Node('div'));
+      const select = e.section.querySelector('[data-testid="campaign_settings_budgetCboSelect"]');
+      e.section.children = e.section.children.filter(node => node !== select && node !== e.inputHost);
+      details.appendChild(select); details.appendChild(e.inputHost);
+      details.appendChild(new Node('div', {}, 'Your daily spend will depend on advertising opportunities available.'));
+      const notice = details.appendChild(new Node('ks-inline-alert', { role: 'alert' }));
+      notice.appendChild(new Node('span', { slot: 'title' }, "Custom budget doesn't qualify for rebate offer"));
+      const link = notice.appendChild(new Node('ks-link', { role: 'link' }, 'Switch'));
+      select.attrs['data-tea-budget-mode'] = '3'; select.text = 'Daily Lifetime';
+      if (!selected) {
+        e.inputHost.visible = false;
+        state.custom.onClick = () => {
+          assert.strictEqual(e.campaignRadio.attrs['aria-checked'], 'true');
+          assert.strictEqual(e.input.value, '');
+          state.custom.attrs['aria-checked'] = 'true'; e.renderInput(); e.inputHost.visible = true;
+        };
+      }
+      await e.campaign.configureCampaignBudget(53.25);
+      assert.strictEqual(state.custom.clicks, selected ? 0 : 1);
+      assert.strictEqual(state.recommended.clicks, 0); assert.strictEqual(link.clicks, 0);
+      assert.strictEqual(select.clicks, 0); assert.strictEqual(e.input.value, '53.25');
+    });
+  }
+  await test('Selected Traffic with rebate badge reaches Custom budget and Continue', async e => {
+    const traffic = objective(e); const custom = realBudgetGroup(e);
+    let continued = 0;
+    e.campaign.clickContinueAndVerifyDemographics = async () => { assert.strictEqual(e.input.value, '55.25'); continued++; };
+    await e.campaign.selectTrafficObjectiveAndBudget({ dailyBudget: 55.25 });
+    assert.strictEqual(traffic.label.clicks, 0); assert.strictEqual(custom.custom.clicks, 1); assert.strictEqual(continued, 1);
+  });
+  await test('Unselected rebate Traffic is selected and verified', async e => {
+    const traffic = objective(e, 'Traffic', '1', false); const reach = objective(e, 'Reach', '5', true, false);
+    traffic.label.onClick = () => { traffic.label.attrs['aria-checked'] = 'true'; reach.label.attrs['aria-checked'] = 'false'; reach.label.attrs.class = 'vi-radio'; };
+    await e.campaign.selectTrafficObjective(); assert.strictEqual(traffic.label.clicks, 1); assert.strictEqual(reach.label.clicks, 0);
+  });
+  await test('Legacy Traffic exact title remains supported', async e => {
+    const traffic = objective(e, 'Traffic', '1', true, false);
+    delete traffic.wrapper.attrs['data-tea-objective-content']; delete traffic.wrapper.attrs['data-tea-objective-value'];
+    assert.strictEqual(e.campaign.findTrafficRadioLabel(), traffic.label); await e.campaign.selectTrafficObjective();
+  });
+  await test('Sales objective type 1 and hidden Traffic are not selected', async e => {
+    const sales = objective(e, 'Sales', '-1'); const hidden = objective(e); hidden.wrapper.visible = false;
+    assert.strictEqual(e.campaign.findTrafficRadioLabel(), null); assert.strictEqual(sales.label.clicks, 0);
+  });
+  await test('Rebate Traffic with no Custom option keeps normal budget flow', async e => {
+    objective(e); let continued = false;
+    e.campaign.clickContinueAndVerifyDemographics = async () => { continued = true; };
+    await e.campaign.selectTrafficObjectiveAndBudget({ dailyBudget: 29 });
+    assert.strictEqual(e.input.value, '29.00'); assert.strictEqual(continued, true);
+  });
+  await test('Budget input click then outside click commits before Continue', async e => {
+    objective(e); const order = []; e.input.onClick = () => order.push('input');
+    e.document.body.onClick = () => { assert.strictEqual(e.input.value, '38.50'); order.push('outside'); };
+    e.campaign.clickContinueAndVerifyDemographics = async () => { order.push('continue'); };
+    await e.campaign.selectTrafficObjectiveAndBudget({ dailyBudget: 38.5 });
+    assert.deepStrictEqual(order, ['input', 'outside', 'continue']);
+  });
+  await test('Outside click targets background, never a descendant button', async e => {
+    const button = e.document.body.appendChild(new Node('button', {}, 'Publish'));
+    await e.campaign.configureCampaignBudget(25);
+    assert.strictEqual(button.clicks, 0); assert.strictEqual(e.document.body.clicks, 1);
+  });
+  await test('Input replaced by outside-click commit is reacquired and verified', async e => {
+    const old = e.input;
+    e.document.body.onClick = () => { const value = old.value; e.renderInput(); e.input.value = value; old.value = ''; };
+    await e.campaign.configureCampaignBudget(32.75); assert.strictEqual(e.input.value, '32.75');
+  });
+  await test('Stop prevents outside commit click', async e => {
+    global.AutomationRunner.shouldAbort = true;
+    assert.throws(() => e.campaign.clickOutsideBudgetInput(e.input), /aborted/);
+    assert.strictEqual(e.document.body.clicks, 0);
   });
   console.log(`CUSTOM BUDGET TEST RESULTS: ${passed} PASSED, ${failed} FAILED`); if (failed) process.exitCode = 1;
 })();
