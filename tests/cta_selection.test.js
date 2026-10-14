@@ -84,7 +84,7 @@ const FULL_CTA_LIST = [
   'Watch now', 'Order now', 'Subscribe', 'Contact us', 'Apply now',
   'Experience now', 'Get offer', 'Install now', 'Join now', 'Visit website',
   'Send inquiry', 'Listen now', 'Read more', 'Reserve', 'Donate',
-  'Play game', 'Take survey', 'Start trial', 'Find a store', 'View content'
+  'Play game', 'Take survey', 'Start trial', 'Find a store', 'View content', 'Interested'
 ];
 // Verified slot names from the captured TikTok HTML (examples only; matched dynamically).
 const REAL_SLOT_NAMES = {
@@ -681,6 +681,35 @@ function visibleTags(fx, label) {
     fx.popup.children = [oldList, ...fx.popup.children.filter(node => node !== oldList)];
     await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
     assert.strictEqual(oldRow.clicks, 0); assert.strictEqual(fx.rows['Order now'].clicks, 1);
+  });
+  const defaultTen = ['Experience now', 'Apply now', 'Watch now', 'Learn more', 'Shop now',
+    'Book now', 'Download', 'Visit website', 'Get offer', 'Play game'];
+  await test('Target among ten defaults bypasses empty dropdown entirely', async env => {
+    const fx = ctaFixture(env, { fullList: true, preselected: defaultTen }); fx.ul.children = [];
+    await env.campaign.configureCallToAction('Watch now'); verify(fx, 'Watch now');
+    assert.strictEqual(fx.state.triggerClicks, 0); assert.strictEqual(fx.state.editClicks, 0);
+  });
+  for (const label of ['Order now', 'Subscribe', 'Sign up', 'Contact us', 'Interested']) {
+    await test('Target outside ten defaults initializes scoped CTA editor: ' + label, async env => {
+      const fx = ctaFixture(env, { fullList: true, preselected: defaultTen }); fx.ul.children = [];
+      fx.state.editBtn.attrs['aria-label'] = 'Edit';
+      fx.state.editBtn.onClick = () => { fx.state.editClicks++; fx.restoreOptions(); };
+      await env.campaign.configureCallToAction(label); verify(fx, label);
+      assert.strictEqual(fx.state.editClicks, 1); assert.strictEqual(fx.rows[label].clicks, 1);
+      assert.ok(fx.state.selectedSnapshots.every(tags => tags.includes(label)));
+    });
+  }
+  await test('Non-Edit operation is never clicked to recover empty CTA list', async env => {
+    const fx = ctaFixture(env, { noDataForever: true });
+    fx.state.editBtn.attrs['aria-label'] = 'Cancel';
+    await assert.rejects(env.campaign.configureCallToAction('Order now'), /zero option rows/);
+    assert.strictEqual(fx.state.editClicks, 0);
+  });
+  await test('Edit recovery that stays No Data stops after one activation without clearing', async env => {
+    const fx = ctaFixture(env, { noDataForever: true }); fx.state.editBtn.attrs['aria-label'] = 'Edit';
+    await assert.rejects(env.campaign.configureCallToAction('Order now'), /zero option rows/);
+    assert.strictEqual(fx.state.editClicks, 1); assert.strictEqual(fx.state.clearClicks, 0);
+    assert.deepStrictEqual(Object.keys(fx.tags), ['Experience now', 'Apply now']);
   });
   console.log('CTA SELECTION TEST RESULTS: ' + passed + ' PASSED, ' + failed + ' FAILED');
   process.exitCode = failed ? 1 : 0;

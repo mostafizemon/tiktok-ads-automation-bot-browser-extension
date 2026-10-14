@@ -2229,6 +2229,7 @@
       const started = Date.now();
       let stage = 'Locate CTA section';
       let retryCount = 0;
+      let editorRecoveryAttempted = false;
       let lastSelected = [];
       const refresh = () => {
         section = this.findCtaSection();
@@ -2396,6 +2397,43 @@
           return null;
         });
       };
+      const recoverCtaEditor = async label => {
+        if (editorRecoveryAttempted) return null;
+        editorRecoveryAttempted = true;
+        const s = state();
+        const operation = deep(section, '[data-testid="lego-hybrid-section-item-operation"]')[0];
+        const edit = operation?.shadowRoot?.querySelector('button[part="base"]') ||
+          deep(operation, 'button[part="base"]')[0];
+        // A generic operation button may be Cancel/Collapse in an active editor.
+        // Only activate a control positively identified as the CTA Edit action.
+        const isEdit = operation && (deep(operation, '[name="edit"]').length > 0 ||
+          this.normalizeCtaText(edit?.getAttribute('aria-label')).toLowerCase() === 'edit' ||
+          this.normalizeCtaText(edit?.textContent).toLowerCase() === 'edit');
+        if (!isEdit || !visible(edit) || !enabled(edit)) return null;
+        logStage('Activate CTA Edit to initialize missing option list');
+        const before = tags();
+        if (s.open) {
+          if (!s.trigger) return null;
+          click(s.trigger);
+          if (!await wait(() => !state().open, 2000)) fail('CTA popup did not close before Edit recovery');
+        }
+        refresh();
+        const liveOperation = deep(section, '[data-testid="lego-hybrid-section-item-operation"]')[0];
+        const liveEdit = liveOperation?.shadowRoot?.querySelector('button[part="base"]') ||
+          deep(liveOperation, 'button[part="base"]')[0];
+        const liveIsEdit = liveOperation && (deep(liveOperation, '[name="edit"]').length > 0 ||
+          this.normalizeCtaText(liveEdit?.getAttribute('aria-label')).toLowerCase() === 'edit' ||
+          this.normalizeCtaText(liveEdit?.textContent).toLowerCase() === 'edit');
+        if (!liveIsEdit || !connected(liveEdit) || !visible(liveEdit) || !enabled(liveEdit)) {
+          fail('CTA Edit action changed or became unavailable during recovery');
+        }
+        click(liveEdit);
+        if (!await wait(() => { refresh(); return select; })) fail('CTA editor did not render after Edit recovery');
+        refresh();
+        if (before.length && !tags().length) fail('CTA editor lost existing selections during Edit recovery');
+        await open();
+        return waitForListRow(label);
+      };
       const findCtaRowInList = async label => {
         logStage('Find CTA directly in dropdown list: ' + label);
         await open();
@@ -2412,6 +2450,7 @@
           await open();
           row = await waitForListRow(label);
         }
+        if (!row && state().rows.length === 0) row = await recoverCtaEditor(label);
         if (!row) {
           const s = state();
           const labels = s.rows.map(item => this.resolveCtaOptionLabel(item, select));
