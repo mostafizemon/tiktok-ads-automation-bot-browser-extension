@@ -483,20 +483,18 @@ function fullVersion(env, {
     assert.ok(env.handler.isRegularCreationInterfacePresent());
   });
 
-  await test('Normal form has priority over leftover Switch to full version button', async env => {
+  await test('Visible Switch to full version has priority over creation page content', async env => {
     const state = fullVersion(env);
     env.normal();
     await env.handler.ensureCustomMode();
-    assert.strictEqual(state.inner.clicks, 0);
-    assert.strictEqual(env.sleeps, 0);
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.confirm.clicks, 1);
   });
 
-  await test('Rebate Traffic metadata skips onboarding without delay', async env => {
+  await test('Rebate Traffic metadata skips onboarding without delay when no switch button', async env => {
     const wrapper = env.document.body.appendChild(new Node('div', { 'data-tea-objective-content': 'Traffic', 'data-tea-objective-value': '1' }));
     wrapper.appendChild(new Node('label', { role: 'radio' }, 'Traffic Rebate offer'));
-    const state = fullVersion(env);
     await env.handler.ensureCustomMode();
-    assert.strictEqual(state.inner.clicks, 0);
     assert.strictEqual(env.sleeps, 0);
   });
 

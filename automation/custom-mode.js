@@ -32,25 +32,43 @@
       const helpers = global.AutomationHelpers;
       if (!helpers) return false;
 
-      // Traffic may include a Rebate offer badge; objective metadata remains exact.
+      // 1. Guard against active mode-switch actions or confirmation modals
+      if (this.findFullVersionConfirmModal()) return false;
+      if (this.findGuidedModeHost('Switch to full version')) return false;
+      if (this.findGuidedModeHost('Exit guided mode')) return false;
+      if (this.findSwitchToCustomModeButton()) return false;
+
+      // 2. Traffic with Rebate metadata
       for (const wrapper of helpers.queryShadowAll('[data-tea-objective-content="Traffic"]')) {
-        const radio = helpers.queryShadow('label[role="radio"]', wrapper);
+        const radio = helpers.queryShadow('label[role="radio"], [role="radio"]', wrapper);
         if (wrapper.getAttribute('data-tea-objective-value') === '1' && radio && helpers.isVisible(radio)) return true;
       }
 
-      // Look for Traffic objective title span or text
-      const trafficSpan = helpers.queryShadow('.index_title_Nvlf1') ||
-                          helpers.findButtonByExactText('Traffic') ||
-                          document.querySelector('.index_title_Nvlf1');
-
-      if (trafficSpan && this.normalizedText(trafficSpan) === 'Traffic' && helpers.isVisible(trafficSpan)) {
-        return true;
+      // 3. Standard radio label control containing Traffic
+      const radioLabels = helpers.queryShadowAll('label[role="radio"], [role="radio"]');
+      for (const label of radioLabels) {
+        if (!helpers.isVisible(label)) continue;
+        const titleSpan = label.querySelector?.('.index_title_Nvlf1, .index_objectiveTitle_hK5BW, .vi-radio__label');
+        let text = titleSpan ? (titleSpan.innerText || titleSpan.textContent || '').trim() : '';
+        if (!text) {
+          const spans = label.querySelectorAll?.('span, div') || [];
+          for (const s of spans) {
+            if ((s.innerText || s.textContent || '').trim() === 'Traffic') {
+              text = 'Traffic';
+              break;
+            }
+          }
+        }
+        if (text === 'Traffic') return true;
       }
 
-      // Check text in document
-      const headings = helpers.queryShadowAll('span, div, p');
-      for (const h of headings) {
-        if ((h.innerText || h.textContent || '').trim() === 'Traffic' && helpers.isVisible(h)) {
+      // 4. Standard Traffic objective title span
+      const trafficSpans = [
+        ...helpers.queryShadowAll('.index_title_Nvlf1'),
+        ...(document.querySelectorAll ? Array.from(document.querySelectorAll('.index_title_Nvlf1')) : [])
+      ];
+      for (const span of trafficSpans) {
+        if (this.normalizedText(span) === 'Traffic' && helpers.isVisible(span)) {
           return true;
         }
       }
@@ -313,16 +331,16 @@
     }
 
     ownsGuidedDialog(element) {
+      if (!element) return false;
+      if (this.isModalHeaderMatching(element, 'Switch to full version?')) return true;
+      if (this.queryOpen('slot[name="confirm-btn"]', element).some(slot => {
+        const assigned = slot.assignedElements?.({ flatten: true }) || [];
+        const label = assigned.length ? assigned.map(el => this.normalizedText(el)).join(' ').trim() : this.normalizedText(slot);
+        return label === 'Confirm';
+      })) return true;
       const transition = this.guidedTransition;
-      if (!transition) return false;
-      if (transition.dialog && (this.isWithin(element, transition.dialog) || this.isWithin(transition.dialog, element))) return true;
-      if (transition.fullVersion) {
-        if (this.isModalHeaderMatching(element, 'Switch to full version?')) return true;
-        return this.queryOpen('slot[name="confirm-btn"]', element).some(slot => {
-          const assigned = slot.assignedElements?.({ flatten: true }) || [];
-          const label = assigned.length ? assigned.map(el => this.normalizedText(el)).join(' ').trim() : this.normalizedText(slot);
-          return label === 'Confirm';
-        });
+      if (transition) {
+        if (transition.dialog && (this.isWithin(element, transition.dialog) || this.isWithin(transition.dialog, element))) return true;
       }
       return this.queryOpen('slot[name="cancel-btn"]', element).some(slot =>
         this.normalizedText(slot) === 'Exit' || (slot.assignedElements?.({ flatten: true }) || []).some(el => this.normalizedText(el) === 'Exit')
@@ -332,19 +350,12 @@
     async handleSwitchToFullVersion(host, timeoutMs) {
       this.checkAbort();
 
-      if (this.isRegularCreationInterfacePresent()) {
-        console.log('[ONBOARDING] Standard campaign form ready');
-        console.log('[ONBOARDING] Continuing to Traffic objective');
-        this.guidedTransition = null;
-        return true;
-      }
-
       let transition = this.guidedTransition;
       if (!transition || !transition.fullVersion) {
         transition = {
           fullVersion: true,
-          host,
-          clickedSwitch: false,
+          host: host || null,
+          clickedSwitch: host ? false : true,
           confirmClicked: false,
           dialog: null
         };
@@ -362,6 +373,7 @@
         }
 
         console.log('[ONBOARDING] Switch to full version detected');
+        console.log('[ONBOARDING] Clicking switch button');
         console.log('[ONBOARDING] Clicking Switch to full version');
         transition.clickedSwitch = true;
         transition.host = activeHost;
@@ -385,6 +397,7 @@
 
         if (stateMatch.direct) {
           console.log('[ONBOARDING] Full version opened directly');
+          console.log('[ONBOARDING] Standard form ready');
           console.log('[ONBOARDING] Standard campaign form ready');
           console.log('[ONBOARDING] Continuing to Traffic objective');
           this.guidedTransition = null;
@@ -393,6 +406,7 @@
 
         const modal = stateMatch.modal;
         transition.dialog = modal;
+        console.log('[ONBOARDING] Confirm modal detected');
         console.log('[ONBOARDING] Switch to full version modal detected');
 
         let confirmBtn = stateMatch.confirmBtn;
@@ -424,11 +438,13 @@
         return true;
       }, timeoutMs, '[ONBOARDING ERROR] Confirmation modal did not close');
 
+      console.log('[ONBOARDING] Modal closed');
       console.log('[ONBOARDING] Confirmation modal closed');
 
       await this.waitForMode(() => this.isRegularCreationInterfacePresent(), timeoutMs,
         '[ONBOARDING ERROR] Standard campaign form not ready');
 
+      console.log('[ONBOARDING] Standard form ready');
       console.log('[ONBOARDING] Standard campaign form ready');
       console.log('[ONBOARDING] Continuing to Traffic objective');
       this.guidedTransition = null;
@@ -500,16 +516,46 @@
       const helpers = global.AutomationHelpers;
       this.log('Evaluating custom mode state...');
 
+      const route = (typeof window !== 'undefined' && window.location?.pathname)
+        ? window.location.pathname
+        : ((typeof window !== 'undefined' && window.location?.href)
+          ? new URL(window.location.href, 'https://ads.tiktok.com').pathname
+          : '/i18n/manage/campaign');
+
+      console.log(`[ONBOARDING] Route: ${route}`);
+      console.log('[ONBOARDING] Handler invoked before Traffic: true');
+
+      const fullHostInitial = this.findGuidedModeHost('Switch to full version');
+      const isFullVersionVisible = !!(fullHostInitial && this.isEnabledAction(fullHostInitial));
+      console.log(`[ONBOARDING] Full version button visible: ${isFullVersionVisible}`);
+
+      const standardFormReadyBefore = this.isRegularCreationInterfacePresent();
+      console.log(`[ONBOARDING] Standard form ready before switch: ${standardFormReadyBefore}`);
+
       console.log('[GUIDED MODE] Checking page');
       console.log('[ONBOARDING] Checking campaign creation UI');
+
+      // Priority 1: Check for an active workflow-critical modal or pending transition
       if (this.guidedTransition) {
         if (this.guidedTransition.fullVersion) {
           return this.handleSwitchToFullVersion(this.guidedTransition.host, timeoutMs);
         }
         return this.exitGuidedMode(this.guidedTransition.host, timeoutMs);
       }
+
+      const activeConfirmModal = this.findFullVersionConfirmModal();
+      if (activeConfirmModal) {
+        console.log('[ONBOARDING] Confirm modal detected');
+        console.log('[ONBOARDING] Switch to full version modal detected');
+        return this.handleSwitchToFullVersion(null, timeoutMs);
+      }
+
       const ready = await this.waitForMode(() => {
-        if (this.isRegularCreationInterfacePresent()) return { normal: true };
+        // Priority 1: Check for active workflow-critical modal
+        const confirmModal = this.findFullVersionConfirmModal();
+        if (confirmModal) return { confirmModal };
+
+        // Priority 2: Check for active supported mode-switch action
         const fullHost = this.findGuidedModeHost('Switch to full version');
         const guidedHost = this.findGuidedModeHost();
         const switchBtn = this.findSwitchToCustomModeButton();
@@ -518,8 +564,15 @@
         }
         if (fullHost) return { fullHost };
         if (guidedHost) return { guidedHost };
-        return switchBtn ? { switchBtn } : null;
+        if (switchBtn) return { switchBtn };
+
+        // Priority 3: Only then check if standard creation form is ready
+        if (this.isRegularCreationInterfacePresent()) return { normal: true };
+
+        return null;
       }, timeoutMs, 'Neither Guided Mode nor the normal campaign form became ready.');
+
+      if (ready.confirmModal) return this.handleSwitchToFullVersion(null, timeoutMs);
       if (ready.fullHost) return this.handleSwitchToFullVersion(ready.fullHost, timeoutMs);
       if (ready.guidedHost) return this.exitGuidedMode(ready.guidedHost, timeoutMs);
       if (ready.normal) {
@@ -527,6 +580,7 @@
         console.log('[GUIDED MODE] Normal campaign form detected');
         console.log('[ONBOARDING] No mode switch required');
         console.log('[ONBOARDING] Traffic objective ready');
+        console.log('[ONBOARDING] Skipped because: Standard campaign form already ready without onboarding button');
         return true;
       }
       const switchBtn = ready.switchBtn;

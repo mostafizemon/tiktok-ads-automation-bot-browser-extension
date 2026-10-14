@@ -111,16 +111,42 @@
     }
 
     /**
+     * Ensure standard creation mode is ready and any onboarding transition has completed
+     * @param {number} [timeoutMs=12000]
+     * @returns {Promise<boolean>}
+     */
+    async ensureInitialCreationModeReady(timeoutMs = 12000) {
+      const stepName = 'ENSURE_INITIAL_CREATION_MODE';
+      this.diag(stepName, 'Ensuring initial creation mode and onboarding state are ready');
+
+      if (!global.CustomModeHandler) {
+        return true;
+      }
+
+      try {
+        const ready = await global.CustomModeHandler.ensureCustomMode(timeoutMs);
+        if (!ready) {
+          throw new Error('[ONBOARDING ERROR] Custom mode / onboarding handler returned unready state');
+        }
+        return true;
+      } catch (err) {
+        console.error('[ONBOARDING ERROR]', err.message || err);
+        this.diag(stepName, 'Creation mode / onboarding transition failed', {
+          error: err.message || String(err)
+        });
+        throw err;
+      }
+    }
+
+    /**
      * Step 2: Handle optional Custom Mode dialog flow
      */
     async handleCustomModeFlow() {
       const stepName = 'CUSTOM_MODE_CHECK';
       this.diag(stepName, 'Evaluating Custom Mode transition requirement');
 
-      if (global.CustomModeHandler) {
-        await global.CustomModeHandler.ensureCustomMode(8000);
-        console.log('[RUNNER] Continuing Traffic objective selection');
-      }
+      await this.ensureInitialCreationModeReady(12000);
+      console.log('[RUNNER] Continuing Traffic objective selection');
 
       this.diag(stepName, 'Custom Mode evaluation finished', {
         verification: 'Interface ready for Traffic objective'
@@ -146,6 +172,9 @@
     async selectTrafficObjectiveAndBudget(config) {
       const h = this.helpers;
       const stepName = 'OBJECTIVE_AND_BUDGET';
+
+      // 0. Ensure creation mode / onboarding is complete before Traffic selection
+      await this.ensureInitialCreationModeReady(12000);
 
       // 1. Detect Advertising Objective page
       await this.detectObjectivePage();
@@ -237,6 +266,18 @@
     async selectTrafficObjective() {
       const h = this.helpers;
       const stepName = 'TRAFFIC_OBJECTIVE';
+      console.log('[TRAFFIC_OBJECTIVE] Starting Traffic selection');
+
+      // Double-check no pending onboarding remains before querying for Traffic radio label
+      if (global.CustomModeHandler) {
+        const hasPendingOnboarding = global.CustomModeHandler.findFullVersionConfirmModal?.() ||
+                                     global.CustomModeHandler.findGuidedModeHost?.('Switch to full version') ||
+                                     global.CustomModeHandler.findGuidedModeHost?.('Exit guided mode') ||
+                                     global.CustomModeHandler.findSwitchToCustomModeButton?.();
+        if (hasPendingOnboarding) {
+          await this.ensureInitialCreationModeReady(12000);
+        }
+      }
 
       // 1. Locate Traffic radio label
       const trafficRadio = await this.findTrafficRadioLabel();
