@@ -112,9 +112,11 @@
       for (let current = element; current; current = this.composedParent(current)) {
         const disabled = current.getAttribute?.('disabled');
         const nativeButton = current.tagName?.toLowerCase() === 'button';
+        const loading = current.getAttribute?.('loading');
         if (current.disabled === true || (disabled !== null && disabled !== undefined &&
             (nativeButton || disabled !== 'false')) || current.getAttribute?.('aria-disabled') === 'true' ||
-            current.getAttribute?.('loading') === 'true' || current.classList?.contains('is-disabled')) return false;
+            (loading !== null && loading !== undefined && loading !== 'false') ||
+            current.classList?.contains('is-disabled')) return false;
       }
       return true;
     }
@@ -131,6 +133,10 @@
         if (result) return result;
         await global.AutomationHelpers.sleep(250);
       }
+      if (message.startsWith('[ONBOARDING ERROR]') || message.startsWith('[ONBOARDING]')) {
+        console.error(message);
+        throw new Error(message);
+      }
       throw new Error(`[GUIDED MODE] ${message}`);
     }
 
@@ -145,8 +151,135 @@
     }
 
     visibleDialogs() {
-      return this.queryOpen('[role="dialog"], [aria-modal="true"], .byted-modal, .arco-modal, .modal, [ks-modal], [class*="modal-content"]')
+      return this.queryOpen('[role="dialog"], [aria-modal="true"], [part="wrapper"], .byted-modal, .arco-modal, [class*="modal"], [ks-modal], [class*="modal-content"]')
         .filter(dialog => global.AutomationHelpers.isVisible(dialog));
+    }
+
+    isModalHeaderMatching(dialog, expectedText = 'Switch to full version?') {
+      if (!dialog) return false;
+      const headers = [
+        ...this.queryOpen('slot[name="header"]', dialog),
+        ...this.queryOpen('.modal__header-title, [class*="header-title"]', dialog),
+        ...this.queryOpen('[part="header"]', dialog),
+        ...this.queryOpen('.modal__header, [class*="modal__header"]', dialog),
+        ...this.queryOpen('[role="heading"], h1, h2, h3, h4', dialog)
+      ];
+      for (const h of headers) {
+        const assigned = h.assignedElements?.({ flatten: true }) || [];
+        const text = assigned.length ? assigned.map(el => this.normalizedText(el)).join(' ').trim() : this.normalizedText(h);
+        if (text === expectedText) return true;
+      }
+      for (const el of this.queryOpen('*', dialog)) {
+        if (this.normalizedText(el) === expectedText) {
+          const inFooter = el.closest?.('[part="footer"], .modal__footer, [class*="footer"]') ||
+                           this.composedParent(el)?.closest?.('[part="footer"], .modal__footer, [class*="footer"]');
+          if (!inFooter) return true;
+        }
+      }
+      return false;
+    }
+
+    findFullVersionConfirmModal() {
+      const candidates = this.visibleDialogs();
+      for (const cand of candidates) {
+        if (this.isModalHeaderMatching(cand, 'Switch to full version?')) {
+          return cand;
+        }
+      }
+      const headerSlots = this.queryOpen('slot[name="header"]');
+      for (const slot of headerSlots) {
+        const assigned = slot.assignedElements?.({ flatten: true }) || [];
+        const text = assigned.length ? assigned.map(el => this.normalizedText(el)).join(' ').trim() : this.normalizedText(slot);
+        if (text === 'Switch to full version?' && global.AutomationHelpers.isVisible(slot)) {
+          let current = slot;
+          while (current && current !== document.body) {
+            if (current.matches?.('[part="wrapper"], [role="dialog"], [aria-modal="true"], [class*="modal"]') ||
+                current.tagName?.toLowerCase().startsWith('ks-modal-')) {
+              if (global.AutomationHelpers.isVisible(current)) return current;
+            }
+            current = this.composedParent(current);
+          }
+        }
+      }
+      return null;
+    }
+
+    findFullVersionConfirmAction(modal) {
+      if (!modal || !global.AutomationHelpers.isVisible(modal)) return null;
+
+      if (!this.isModalHeaderMatching(modal, 'Switch to full version?')) {
+        return null;
+      }
+
+      const footers = this.queryOpen('[part="footer"], .modal__footer, [class*="modal__footer"]', modal);
+      const footer = footers[0] || modal;
+
+      const confirmSlots = this.queryOpen('slot[name="confirm-btn"]', footer);
+      if (!confirmSlots.length) {
+        confirmSlots.push(...this.queryOpen('slot[name="confirm-btn"]', modal));
+      }
+
+      const actions = new Set();
+
+      for (const slot of confirmSlots) {
+        const assigned = slot.assignedElements?.({ flatten: true }) || [];
+        const label = assigned.length ? assigned.map(el => this.normalizedText(el)).join(' ').trim() : this.normalizedText(slot);
+        if (label !== 'Confirm') continue;
+
+        let host = null;
+        let current = slot;
+        while (current && current !== modal) {
+          if (current.tagName?.toLowerCase().startsWith('ks-button-') || current.hasAttribute?.('ks-button')) {
+            host = current;
+            break;
+          }
+          current = this.composedParent(current);
+        }
+
+        if (!host && assigned.length) {
+          for (const el of assigned) {
+            if (el.tagName?.toLowerCase().startsWith('ks-button-') || el.hasAttribute?.('ks-button')) {
+              host = el;
+              break;
+            }
+          }
+        }
+
+        if (host && this.isEnabledAction(host)) {
+          const button = host.shadowRoot?.querySelector('button[part="self"], button[part="base"], button');
+          if (button && this.isEnabledAction(button) && !this.isCancelOrCloseButton(button, host)) {
+            actions.add(button);
+          }
+        }
+      }
+
+      if (!actions.size) {
+        const buttonHosts = this.queryOpen('*', footer).filter(el =>
+          (el.tagName?.toLowerCase().startsWith('ks-button-') || el.hasAttribute?.('ks-button')) &&
+          this.normalizedText(el) === 'Confirm' &&
+          this.isEnabledAction(el)
+        );
+        for (const host of buttonHosts) {
+          const button = host.shadowRoot?.querySelector('button[part="self"], button[part="base"], button');
+          if (button && this.isEnabledAction(button) && !this.isCancelOrCloseButton(button, host)) {
+            actions.add(button);
+          }
+        }
+      }
+
+      if (actions.size > 1) {
+        throw new Error('[ONBOARDING] Multiple Confirm actions found in modal; refusing ambiguous action.');
+      }
+
+      return [...actions][0] || null;
+    }
+
+    isCancelOrCloseButton(button, host) {
+      if (this.normalizedText(button) === 'Cancel' || this.normalizedText(host) === 'Cancel') return true;
+      if (button.closest?.('slot[name="cancel-btn"]') || host.closest?.('slot[name="cancel-btn"]')) return true;
+      if (button.getAttribute?.('part') === 'closeIcon' || host.getAttribute?.('part') === 'closeIcon') return true;
+      if (button.classList?.contains('modal__close') || host.classList?.contains('modal__close')) return true;
+      return false;
     }
 
     findGuidedExitAction(dialog) {
@@ -156,7 +289,6 @@
         const label = assigned.length ? assigned.map(el => this.normalizedText(el)).join(' ').trim() : this.normalizedText(slot);
         if (label !== 'Exit') continue;
         for (const source of assigned.length ? assigned : [slot]) {
-          // Walk the slot's actual button/host structure, never click the slot itself.
           let current = source;
           while (current && current !== dialog && this.isWithin(current, dialog)) {
             let button = null;
@@ -171,7 +303,6 @@
             }
             current = this.composedParent(current);
           }
-          // Assigned wrappers can contain the actual labeled button.
           for (const button of this.queryOpen('button, [role="button"]', source)) {
             if (this.normalizedText(button) === 'Exit' && this.isWithin(button, dialog) && this.isEnabledAction(button)) actions.add(button);
           }
@@ -181,18 +312,133 @@
       return [...actions][0] || null;
     }
 
-    // Also used by the popup observer to protect the transition before dialog text has rendered.
     ownsGuidedDialog(element) {
       const transition = this.guidedTransition;
       if (!transition) return false;
       if (transition.dialog && (this.isWithin(element, transition.dialog) || this.isWithin(transition.dialog, element))) return true;
+      if (transition.fullVersion) {
+        if (this.isModalHeaderMatching(element, 'Switch to full version?')) return true;
+        return this.queryOpen('slot[name="confirm-btn"]', element).some(slot => {
+          const assigned = slot.assignedElements?.({ flatten: true }) || [];
+          const label = assigned.length ? assigned.map(el => this.normalizedText(el)).join(' ').trim() : this.normalizedText(slot);
+          return label === 'Confirm';
+        });
+      }
       return this.queryOpen('slot[name="cancel-btn"]', element).some(slot =>
         this.normalizedText(slot) === 'Exit' || (slot.assignedElements?.({ flatten: true }) || []).some(el => this.normalizedText(el) === 'Exit')
       );
     }
 
+    async handleSwitchToFullVersion(host, timeoutMs) {
+      this.checkAbort();
+
+      if (this.isRegularCreationInterfacePresent()) {
+        console.log('[ONBOARDING] Standard campaign form ready');
+        console.log('[ONBOARDING] Continuing to Traffic objective');
+        this.guidedTransition = null;
+        return true;
+      }
+
+      let transition = this.guidedTransition;
+      if (!transition || !transition.fullVersion) {
+        transition = {
+          fullVersion: true,
+          host,
+          clickedSwitch: false,
+          confirmClicked: false,
+          dialog: null
+        };
+        this.guidedTransition = transition;
+      }
+
+      if (!transition.clickedSwitch) {
+        const activeHost = this.findGuidedModeHost('Switch to full version') || host;
+        const button = activeHost?.shadowRoot?.querySelector('button[part="self"]');
+
+        this.checkAbort();
+        if (!activeHost || !button || !this.isEnabledAction(activeHost) || !this.isEnabledAction(button)) {
+          console.error('[ONBOARDING ERROR] Switch button not clickable');
+          throw new Error('[ONBOARDING ERROR] Switch button not clickable');
+        }
+
+        console.log('[ONBOARDING] Switch to full version detected');
+        console.log('[ONBOARDING] Clicking Switch to full version');
+        transition.clickedSwitch = true;
+        transition.host = activeHost;
+        button.click();
+      }
+
+      if (!transition.confirmClicked) {
+        console.log('[ONBOARDING] Waiting for confirmation modal');
+
+        const stateMatch = await this.waitForMode(() => {
+          const modal = this.findFullVersionConfirmModal();
+          if (modal) {
+            const confirmBtn = this.findFullVersionConfirmAction(modal);
+            return { modal, confirmBtn };
+          }
+          if (this.isRegularCreationInterfacePresent()) {
+            return { direct: true };
+          }
+          return null;
+        }, timeoutMs, '[ONBOARDING ERROR] Confirmation modal not found');
+
+        if (stateMatch.direct) {
+          console.log('[ONBOARDING] Full version opened directly');
+          console.log('[ONBOARDING] Standard campaign form ready');
+          console.log('[ONBOARDING] Continuing to Traffic objective');
+          this.guidedTransition = null;
+          return true;
+        }
+
+        const modal = stateMatch.modal;
+        transition.dialog = modal;
+        console.log('[ONBOARDING] Switch to full version modal detected');
+
+        let confirmBtn = stateMatch.confirmBtn;
+        if (!confirmBtn) {
+          confirmBtn = await this.waitForMode(() => {
+            const currentModal = this.findFullVersionConfirmModal() || modal;
+            return this.findFullVersionConfirmAction(currentModal);
+          }, Math.min(timeoutMs, 4000), '[ONBOARDING ERROR] Confirm button not found');
+        }
+
+        console.log('[ONBOARDING] Confirm button detected');
+        this.checkAbort();
+
+        console.log('[ONBOARDING] Clicking Confirm');
+        transition.confirmClicked = true;
+
+        try {
+          confirmBtn.click();
+        } catch (err) {
+          console.error('[ONBOARDING ERROR] Confirmation click failed', err);
+          throw new Error('[ONBOARDING ERROR] Confirmation click failed');
+        }
+      }
+
+      await this.waitForMode(() => {
+        const activeModal = this.findFullVersionConfirmModal();
+        if (activeModal && global.AutomationHelpers.isVisible(activeModal)) return false;
+        if (transition.dialog && global.AutomationHelpers.isVisible(transition.dialog)) return false;
+        return true;
+      }, timeoutMs, '[ONBOARDING ERROR] Confirmation modal did not close');
+
+      console.log('[ONBOARDING] Confirmation modal closed');
+
+      await this.waitForMode(() => this.isRegularCreationInterfacePresent(), timeoutMs,
+        '[ONBOARDING ERROR] Standard campaign form not ready');
+
+      console.log('[ONBOARDING] Standard campaign form ready');
+      console.log('[ONBOARDING] Continuing to Traffic objective');
+      this.guidedTransition = null;
+      return true;
+    }
+
     async exitGuidedMode(host, timeoutMs) {
-      const fullVersion = this.guidedTransition?.fullVersion ?? (this.normalizedText(host) === 'Switch to full version');
+      if (this.normalizedText(host) === 'Switch to full version' || this.guidedTransition?.fullVersion) {
+        return this.handleSwitchToFullVersion(host, timeoutMs);
+      }
       let transition = this.guidedTransition;
       if (!transition || transition.host !== host) {
         const button = host.shadowRoot?.querySelector('button[part="self"]');
@@ -200,48 +446,29 @@
         if (!this.isEnabledAction(host) || !this.isEnabledAction(button)) {
           throw new Error('[ONBOARDING] Mode-switch button became unavailable before clicking.');
         }
-        transition = { host, fullVersion, before: new Set(this.visibleDialogs()), dialog: null, exitClicked: false };
+        transition = { host, fullVersion: false, before: new Set(this.visibleDialogs()), dialog: null, exitClicked: false };
         this.guidedTransition = transition;
         this.checkAbort();
-        console.log(fullVersion ? '[ONBOARDING] Switch to full version detected' : '[GUIDED MODE] Exit guided mode button detected');
-        console.log(fullVersion ? '[ONBOARDING] Clicking Switch to full version' : '[GUIDED MODE] Clicking Exit guided mode');
+        console.log('[GUIDED MODE] Exit guided mode button detected');
+        console.log('[GUIDED MODE] Clicking Exit guided mode');
         button.click();
       }
       if (!transition.exitClicked) {
-        console.log(fullVersion ? '[ONBOARDING] Waiting for confirmation or standard campaign form' : '[GUIDED MODE] Waiting for confirmation popup');
+        console.log('[GUIDED MODE] Waiting for confirmation popup');
         const match = await this.waitForMode(() => {
           const matches = this.visibleDialogs().filter(dialog => !transition.before.has(dialog))
-            .map(dialog => {
-              let button = this.findGuidedExitAction(dialog);
-              const text = this.normalizedText(dialog).toLowerCase();
-              if (!button && fullVersion && text.includes('stay') && text.includes('exit')) {
-                button = this.findExitButtonInDialog(dialog);
-                if (!this.isEnabledAction(button)) button = null;
-              }
-              return { dialog, button };
-            }).filter(item => item.button);
-          // Nested modal wrappers can refer to the same action; different actions are ambiguous.
+            .map(dialog => ({ dialog, button: this.findGuidedExitAction(dialog) }))
+            .filter(item => item.button);
           if (new Set(matches.map(item => item.button)).size > 1) {
             throw new Error('[GUIDED MODE] Multiple new exit dialogs found; refusing ambiguous action.');
           }
-          if (!matches.length && fullVersion && this.isRegularCreationInterfacePresent() &&
-              !this.visibleDialogs().some(dialog => !transition.before.has(dialog))) return { normal: true };
           return matches[0];
-        }, timeoutMs, fullVersion
-          ? 'Switch to full version did not produce a standard form or an enabled confirmation Exit action.'
-          : 'Exit confirmation popup or enabled Exit action did not become ready.');
-        if (match.normal) {
-          console.log('[ONBOARDING] Full version opened directly');
-          console.log('[ONBOARDING] Standard campaign form ready');
-          console.log('[ONBOARDING] Continuing to Traffic objective');
-          this.guidedTransition = null;
-          return true;
-        }
+        }, timeoutMs, 'Exit confirmation popup or enabled Exit action did not become ready.');
         transition.dialog = match.dialog;
-        console.log(fullVersion ? '[ONBOARDING] Confirmation dialog detected' : '[GUIDED MODE] Confirmation popup detected');
+        console.log('[GUIDED MODE] Confirmation popup detected');
         this.checkAbort();
         transition.exitClicked = true;
-        console.log(fullVersion ? '[ONBOARDING] Clicking Exit' : '[GUIDED MODE] Clicking popup Exit');
+        console.log('[GUIDED MODE] Clicking popup Exit');
         match.button.click();
       }
       await this.waitForMode(() => !global.AutomationHelpers.isVisible(transition.dialog), timeoutMs,
@@ -250,10 +477,6 @@
         'Normal campaign form did not become ready after exiting Guided Mode.');
       console.log('[GUIDED MODE] Guided Mode exited');
       console.log('[GUIDED MODE] Normal campaign form ready');
-      if (fullVersion) {
-        console.log('[ONBOARDING] Standard campaign form ready');
-        console.log('[ONBOARDING] Continuing to Traffic objective');
-      }
       this.guidedTransition = null;
       return true;
     }
@@ -278,9 +501,13 @@
       this.log('Evaluating custom mode state...');
 
       console.log('[GUIDED MODE] Checking page');
-      console.log('[ONBOARDING] Checking initial campaign UI');
-      // A transition already clicked must finish without dispatching either action again.
-      if (this.guidedTransition) return this.exitGuidedMode(this.guidedTransition.host, timeoutMs);
+      console.log('[ONBOARDING] Checking campaign creation UI');
+      if (this.guidedTransition) {
+        if (this.guidedTransition.fullVersion) {
+          return this.handleSwitchToFullVersion(this.guidedTransition.host, timeoutMs);
+        }
+        return this.exitGuidedMode(this.guidedTransition.host, timeoutMs);
+      }
       const ready = await this.waitForMode(() => {
         if (this.isRegularCreationInterfacePresent()) return { normal: true };
         const fullHost = this.findGuidedModeHost('Switch to full version');
@@ -289,9 +516,11 @@
         if ([fullHost, guidedHost, switchBtn].filter(Boolean).length > 1) {
           throw new Error('[ONBOARDING] Multiple active mode-switch actions found; refusing ambiguous action.');
         }
-        if (fullHost || guidedHost) return { guidedHost: fullHost || guidedHost };
+        if (fullHost) return { fullHost };
+        if (guidedHost) return { guidedHost };
         return switchBtn ? { switchBtn } : null;
       }, timeoutMs, 'Neither Guided Mode nor the normal campaign form became ready.');
+      if (ready.fullHost) return this.handleSwitchToFullVersion(ready.fullHost, timeoutMs);
       if (ready.guidedHost) return this.exitGuidedMode(ready.guidedHost, timeoutMs);
       if (ready.normal) {
         console.log('[GUIDED MODE] Guided Mode not present');

@@ -114,6 +114,174 @@ function guided(env, { suffix = '6xhh7t2y', delay = 0, assigned = false, close =
   return state;
 }
 
+function fullVersion(env, {
+  suffix = 'pz4ceaj9',
+  modalSuffix = 'zskw9xpt',
+  delay = 0,
+  assigned = false,
+  close = true,
+  noForm = false,
+  disabledDelay = 0,
+  rerenderModal = false,
+  direct = false
+} = {}) {
+  const host = env.document.body.appendChild(new Node(`ks-button-${suffix}`, {
+    variant: 'default', loading: 'false', disabled: 'false', 'ks-button': '', class: ''
+  }, '  Switch   to full version  '));
+  const inner = host.shadow().appendChild(new Node('button', {
+    type: 'button',
+    class: 'button button--md button--angle',
+    part: 'self'
+  }));
+  inner.appendChild(new Node('slot'));
+
+  const state = {
+    host,
+    inner,
+    modal: null,
+    confirm: null,
+    cancel: null,
+    closeBtn: null,
+    confirmSlot: null,
+    cancelSlot: null
+  };
+
+  inner.onClick = () => {
+    if (direct) {
+      host.visible = false;
+      if (!noForm) env.normal();
+      return;
+    }
+
+    const show = () => {
+      const modalHost = env.document.body.appendChild(new Node('ks-modal-host'));
+      const wrapper = modalHost.shadow().appendChild(new Node('div', {
+        class: 'modal__wrapper modal__wrapper--md',
+        part: 'wrapper',
+        style: 'transform: scale(1); opacity: 1;'
+      }));
+      state.modal = wrapper;
+
+      const header = wrapper.appendChild(new Node('div', { class: 'modal__header', part: 'header' }));
+      const headerTitle = header.appendChild(new Node('div', { class: 'modal__header-title' }));
+      const headerSlot = headerTitle.appendChild(new Node('slot', { name: 'header' }, assigned ? '' : 'Switch to full version?'));
+      if (assigned) {
+        const headerText = new Node('span', {}, 'Switch to full version?');
+        headerTitle.appendChild(headerText);
+        headerText.assignedSlot = headerSlot;
+        headerSlot.assignedElements = () => [headerText];
+      } else {
+        headerSlot.assignedElements = () => [];
+      }
+
+      const closeBtn = header.appendChild(new Node('button', { part: 'closeIcon', class: 'modal__close' }, 'x'));
+      state.closeBtn = closeBtn;
+
+      const footer = wrapper.appendChild(new Node('div', { class: 'modal__footer', part: 'footer' }));
+      const btns = footer.appendChild(new Node('div', { class: 'modal__footer__btns' }));
+
+      const cancelHost = btns.appendChild(new Node(`ks-button-${modalSuffix}`, {
+        'ks-button': '',
+        disabled: 'false'
+      }));
+      const cancelInner = cancelHost.shadow().appendChild(new Node('button', { part: 'self' }));
+      const cancelSlot = cancelHost.appendChild(new Node('slot', { name: 'cancel-btn' }, assigned ? '' : 'Cancel'));
+      if (assigned) {
+        const cancelText = new Node('span', {}, 'Cancel');
+        cancelHost.appendChild(cancelText);
+        cancelText.assignedSlot = cancelSlot;
+        cancelSlot.assignedElements = () => [cancelText];
+      } else {
+        cancelSlot.assignedElements = () => [];
+      }
+      state.cancel = cancelInner;
+      state.cancelSlot = cancelSlot;
+
+      const confirmHost = btns.appendChild(new Node(`ks-button-${modalSuffix}`, {
+        'ks-button': '',
+        disabled: 'false'
+      }));
+      const confirmInner = confirmHost.shadow().appendChild(new Node('button', {
+        type: 'button',
+        class: 'button button--md button--angle button--type-contained button--color-primary',
+        part: 'self',
+        ...(disabledDelay ? { disabled: 'disabled' } : {})
+      }));
+      const confirmSlot = confirmHost.appendChild(new Node('slot', { name: 'confirm-btn' }, assigned ? '' : 'Confirm'));
+      if (assigned) {
+        const confirmText = new Node('span', {}, 'Confirm');
+        confirmHost.appendChild(confirmText);
+        confirmText.assignedSlot = confirmSlot;
+        confirmSlot.assignedElements = () => [confirmText];
+      } else {
+        confirmSlot.assignedElements = () => [];
+      }
+      state.confirm = confirmInner;
+      state.confirmSlot = confirmSlot;
+
+      confirmInner.onClick = () => {
+        if (close) {
+          modalHost.visible = false;
+          wrapper.visible = false;
+        }
+        host.visible = false;
+        if (!noForm) env.normal();
+      };
+
+      if (disabledDelay) {
+        env.later(disabledDelay, () => delete confirmInner.attrs.disabled);
+      }
+
+      if (rerenderModal) {
+        env.later(200, () => {
+          modalHost.visible = false;
+          wrapper.visible = false;
+          const newHost = env.document.body.appendChild(new Node('ks-modal-host-rerendered'));
+          const newWrapper = newHost.shadow().appendChild(new Node('div', {
+            class: 'modal__wrapper modal__wrapper--md',
+            part: 'wrapper',
+            style: 'transform: scale(1); opacity: 1;'
+          }));
+          const newHeader = newWrapper.appendChild(new Node('div', { class: 'modal__header', part: 'header' }));
+          const newTitle = newHeader.appendChild(new Node('div', { class: 'modal__header-title' }));
+          newTitle.appendChild(new Node('slot', { name: 'header' }, 'Switch to full version?'));
+          const newClose = newHeader.appendChild(new Node('button', { part: 'closeIcon' }, 'x'));
+          const newFooter = newWrapper.appendChild(new Node('div', { class: 'modal__footer', part: 'footer' }));
+          const newBtns = newFooter.appendChild(new Node('div', { class: 'modal__footer__btns' }));
+          const newCancelHost = newBtns.appendChild(new Node(`ks-button-${modalSuffix}`, { 'ks-button': '', disabled: 'false' }));
+          const newCancelInner = newCancelHost.shadow().appendChild(new Node('button', { part: 'self' }));
+          newCancelHost.appendChild(new Node('slot', { name: 'cancel-btn' }, 'Cancel'));
+          const newConfirmHost = newBtns.appendChild(new Node(`ks-button-${modalSuffix}`, { 'ks-button': '', disabled: 'false' }));
+          const newConfirmInner = newConfirmHost.shadow().appendChild(new Node('button', {
+            type: 'button',
+            class: 'button button--md button--angle button--type-contained button--color-primary',
+            part: 'self'
+          }));
+          newConfirmHost.appendChild(new Node('slot', { name: 'confirm-btn' }, 'Confirm'));
+          newConfirmInner.onClick = () => {
+            if (close) {
+              newHost.visible = false;
+              newWrapper.visible = false;
+            }
+            host.visible = false;
+            if (!noForm) env.normal();
+          };
+          state.confirm = newConfirmInner;
+          state.cancel = newCancelInner;
+          state.closeBtn = newClose;
+          state.modal = newWrapper;
+        });
+      }
+
+      assert.strictEqual(global.PopupHandler.classifyDialog(wrapper).type, 'WORKFLOW_CRITICAL');
+    };
+
+    if (delay) env.later(delay, show); else show();
+  };
+
+  return state;
+}
+
 (async () => {
   let passed = 0; let failed = 0;
   const realNow = Date.now;
@@ -238,99 +406,186 @@ function guided(env, { suffix = '6xhh7t2y', delay = 0, assigned = false, close =
     const second = guided(env, { suffix: 'next-campaign' }); await env.handler.ensureCustomMode();
     assert.strictEqual(first.exit.clicks, 1); assert.strictEqual(second.exit.clicks, 1);
   });
-  for (const suffix of ['nyfkz08e', 'next-build']) {
-    await test(`Full version inner shadow button then scoped popup Exit (${suffix})`, async env => {
-      const state = guided(env, { suffix, delay: 750 });
-      state.host.text = '  Switch   to full version  ';
-      const unrelated = env.document.body.appendChild(new Node('button', {}, 'Exit'));
-      await env.handler.ensureCustomMode();
-      assert.strictEqual(state.host.clicks, 0); assert.strictEqual(state.inner.clicks, 1);
-      assert.strictEqual(state.exit.clicks, 1); assert.strictEqual(unrelated.clicks, 0);
-      await env.handler.ensureCustomMode();
-      assert.strictEqual(state.inner.clicks, 1); assert.strictEqual(state.exit.clicks, 1);
+  for (const suffix of ['pz4ceaj9', 'zskw9xpt', 'next-build-2026']) {
+    await test(`Create -> Switch to full version -> shadow button -> modal -> Confirm -> normal (${suffix})`, async env => {
+      let state;
+      const create = env.document.body.appendChild(new Node('button', {}, 'Create'));
+      create.onClick = () => { state = fullVersion(env, { suffix, delay: 500 }); };
+      await env.campaign.clickCreateCampaign();
+      await env.campaign.handleCustomModeFlow();
+      assert.strictEqual(create.clicks, 1);
+      assert.strictEqual(state.host.clicks, 0);
+      assert.strictEqual(state.inner.clicks, 1);
+      assert.strictEqual(state.confirm.clicks, 1);
+      assert.strictEqual(state.cancel.clicks, 0);
+      assert.strictEqual(state.closeBtn.clicks, 0);
+      assert.strictEqual(state.confirmSlot.clicks, 0);
+      assert.ok(env.handler.isRegularCreationInterfacePresent());
     });
   }
-  await test('Full version opens form directly without waiting for a popup', async env => {
-    const state = guided(env); state.host.text = 'Switch to full version';
-    state.inner.onClick = () => { state.host.visible = false; env.normal(); };
+
+  await test('Assigned header and confirm slots resolve accurately', async env => {
+    const state = fullVersion(env, { assigned: true });
     await env.handler.ensureCustomMode();
-    assert.strictEqual(env.sleeps, 0); assert.strictEqual(state.inner.clicks, 1);
-    assert.strictEqual(state.exit, null);
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.confirm.clicks, 1);
+    assert.strictEqual(state.cancel.clicks, 0);
+    assert.strictEqual(state.closeBtn.clicks, 0);
   });
-  await test('Normal form has priority over leftover onboarding buttons', async env => {
-    const state = guided(env); state.host.text = 'Switch to full version'; env.normal();
-    await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 0); assert.strictEqual(env.sleeps, 0);
+
+  await test('Unrelated Confirm and Cancel buttons elsewhere on the page are ignored', async env => {
+    const unrelatedConfirm = env.document.body.appendChild(new Node('button', {}, 'Confirm'));
+    const unrelatedCancel = env.document.body.appendChild(new Node('button', {}, 'Cancel'));
+    const unrelatedExit = env.document.body.appendChild(new Node('button', {}, 'Exit'));
+    const state = fullVersion(env);
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.confirm.clicks, 1);
+    assert.strictEqual(unrelatedConfirm.clicks, 0);
+    assert.strictEqual(unrelatedCancel.clicks, 0);
+    assert.strictEqual(unrelatedExit.clicks, 0);
   });
+
+  await test('Delayed confirmation modal rendering', async env => {
+    const state = fullVersion(env, { delay: 750 });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.confirm.clicks, 1);
+  });
+
+  await test('Delayed and initially disabled Confirm button becomes ready without duplicate clicks', async env => {
+    const state = fullVersion(env, { delay: 500, disabledDelay: 750 });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.confirm.clicks, 1);
+  });
+
+  await test('Modal rerenders after opening without stale DOM references or duplicate clicks', async env => {
+    const state = fullVersion(env, { rerenderModal: true });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.confirm.clicks, 1);
+    assert.strictEqual(state.cancel.clicks, 0);
+  });
+
+  await test('Concurrent or subsequent handler calls share transition without duplicate clicks', async env => {
+    const state = fullVersion(env, { delay: 500 });
+    await Promise.all([env.handler.ensureCustomMode(), env.handler.ensureCustomMode()]);
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.confirm.clicks, 1);
+  });
+
+  await test('Direct transition without modal opens form directly', async env => {
+    const state = fullVersion(env, { direct: true });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(env.sleeps, 0);
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.confirm, null);
+    assert.ok(env.handler.isRegularCreationInterfacePresent());
+  });
+
+  await test('Normal form has priority over leftover Switch to full version button', async env => {
+    const state = fullVersion(env);
+    env.normal();
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 0);
+    assert.strictEqual(env.sleeps, 0);
+  });
+
   await test('Rebate Traffic metadata skips onboarding without delay', async env => {
     const wrapper = env.document.body.appendChild(new Node('div', { 'data-tea-objective-content': 'Traffic', 'data-tea-objective-value': '1' }));
     wrapper.appendChild(new Node('label', { role: 'radio' }, 'Traffic Rebate offer'));
-    const state = guided(env); state.host.text = 'Switch to full version';
-    await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 0); assert.strictEqual(env.sleeps, 0);
+    const state = fullVersion(env);
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 0);
+    assert.strictEqual(env.sleeps, 0);
   });
+
   await test('Full version disabled host waits then clicks once when enabled', async env => {
-    const state = guided(env); state.host.text = 'Switch to full version'; state.host.attrs.disabled = 'true';
+    const state = fullVersion(env);
+    state.host.attrs.disabled = 'true';
     env.later(750, () => { state.host.attrs.disabled = 'false'; });
-    await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 1);
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.confirm.clicks, 1);
   });
+
   await test('Permanently disabled full version never clicks', async env => {
-    const state = guided(env); state.host.text = 'Switch to full version'; state.inner.attrs.disabled = 'disabled';
+    const state = fullVersion(env);
+    state.inner.attrs.disabled = 'disabled';
     await assert.rejects(env.handler.ensureCustomMode(750), /Neither Guided Mode nor/);
     assert.strictEqual(state.inner.clicks, 0);
   });
+
   await test('Full version appears asynchronously after Create', async env => {
     let state;
-    env.later(750, () => { state = guided(env); state.host.text = 'Switch to full version'; });
-    await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 1); assert.strictEqual(state.exit.clicks, 1);
+    env.later(750, () => { state = fullVersion(env); });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.confirm.clicks, 1);
   });
-  await test('Full version rerender replaces host before direct form appears', async env => {
-    const state = guided(env); state.host.text = 'Switch to full version';
-    state.inner.onClick = () => {
-      state.host.visible = false; state.host.text = '';
-      env.later(500, () => env.normal());
-    };
-    await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 1);
+
+  await test('Stop before Switch to full version click', async env => {
+    const state = fullVersion(env);
+    global.AutomationRunner.shouldAbort = true;
+    await assert.rejects(env.handler.ensureCustomMode(), /aborted or paused/);
+    assert.strictEqual(state.inner.clicks, 0);
   });
-  await test('Full version resumes pending transition without clicking replaced host again', async env => {
-    const state = guided(env); state.host.text = 'Switch to full version';
-    state.inner.onClick = () => { state.host.visible = false; state.host.text = ''; };
-    await assert.rejects(env.handler.ensureCustomMode(500), /Switch to full version did not produce/);
-    env.normal(); await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 1);
-  });
-  await test('Full version ignores pre-existing Exit dialog', async env => {
-    const old = env.document.body.appendChild(new Node('div', { role: 'dialog' }));
-    const button = old.appendChild(new Node('button')); button.appendChild(new Node('slot', { name: 'cancel-btn' }, 'Exit'));
-    const state = guided(env); state.host.text = 'Switch to full version';
-    await env.handler.ensureCustomMode(); assert.strictEqual(button.clicks, 0); assert.strictEqual(state.exit.clicks, 1);
-  });
-  await test('Full version supports legacy Stay/Exit confirmation', async env => {
-    const state = guided(env); state.host.text = 'Switch to full version'; let exit;
-    state.inner.onClick = () => {
-      const dlg = env.document.body.appendChild(new Node('div', { role: 'dialog' }, 'Stay '));
-      exit = dlg.appendChild(new Node('button', {}, 'Exit'));
-      exit.onClick = () => { dlg.visible = false; state.host.visible = false; env.normal(); };
-    };
-    await env.handler.ensureCustomMode(); assert.strictEqual(exit.clicks, 1);
-  });
-  await test('Multiple visible onboarding variants stop without blind clicks', async env => {
-    const guidedState = guided(env); const full = guided(env); full.host.text = 'Switch to full version';
-    await assert.rejects(env.handler.ensureCustomMode(), /Multiple active mode-switch actions/);
-    assert.strictEqual(guidedState.inner.clicks, 0); assert.strictEqual(full.inner.clicks, 0);
-  });
-  await test('Hidden obsolete full version host is ignored', async env => {
-    const full = guided(env); full.host.text = 'Switch to full version'; full.host.visible = false;
-    const current = guided(env); await env.handler.ensureCustomMode();
-    assert.strictEqual(full.inner.clicks, 0); assert.strictEqual(current.inner.clicks, 1);
-  });
-  await test('Full version respects Stop while popup is rendering', async env => {
-    const state = guided(env, { delay: 1000 }); state.host.text = 'Switch to full version';
+
+  await test('Pause while waiting for confirmation modal prevents Confirm click', async env => {
+    const state = fullVersion(env, { delay: 1000 });
     env.later(250, () => { global.AutomationRunner.shouldAbort = true; });
     await assert.rejects(env.handler.ensureCustomMode(), /aborted or paused/);
-    assert.strictEqual(state.inner.clicks, 1); assert.strictEqual(state.exit, null);
-  });
-  await test('Full version missing popup/form stops with a useful diagnostic', async env => {
-    const state = guided(env); state.host.text = 'Switch to full version'; state.inner.onClick = () => {};
-    await assert.rejects(env.handler.ensureCustomMode(750), /Switch to full version did not produce/);
     assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.confirm, null);
+  });
+
+  await test('Full version missing modal stops with diagnostic', async env => {
+    const state = fullVersion(env);
+    state.inner.onClick = () => {};
+    await assert.rejects(env.handler.ensureCustomMode(750), /Confirmation modal not found/);
+    assert.strictEqual(state.inner.clicks, 1);
+  });
+
+  await test('Confirmation modal failing to close stops with diagnostic', async env => {
+    const state = fullVersion(env, { close: false });
+    await assert.rejects(env.handler.ensureCustomMode(750), /Confirmation modal did not close/);
+    assert.strictEqual(state.confirm.clicks, 1);
+  });
+
+  await test('Missing normal form after modal closes stops with diagnostic', async env => {
+    fullVersion(env, { noForm: true });
+    await assert.rejects(env.handler.ensureCustomMode(750), /Standard campaign form not ready/);
+  });
+
+  await test('Multiple visible onboarding variants stop without blind clicks', async env => {
+    const guidedState = guided(env);
+    const fullState = fullVersion(env);
+    await assert.rejects(env.handler.ensureCustomMode(), /Multiple active mode-switch actions/);
+    assert.strictEqual(guidedState.inner.clicks, 0);
+    assert.strictEqual(fullState.inner.clicks, 0);
+  });
+
+  await test('Hidden obsolete full version host is ignored', async env => {
+    const obsolete = fullVersion(env);
+    obsolete.host.visible = false;
+    const current = guided(env);
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(obsolete.inner.clicks, 0);
+    assert.strictEqual(current.inner.clicks, 1);
+  });
+
+  await test('Sequential multi-campaigns each switch to full version and confirm once', async env => {
+    const first = fullVersion(env, { suffix: 'camp-1', modalSuffix: 'modal-1' });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(first.inner.clicks, 1);
+    assert.strictEqual(first.confirm.clicks, 1);
+
+    for (const node of env.document.body.children) node.visible = false;
+
+    const second = fullVersion(env, { suffix: 'camp-2', modalSuffix: 'modal-2' });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(second.inner.clicks, 1);
+    assert.strictEqual(second.confirm.clicks, 1);
   });
   console.log(`GUIDED MODE TEST RESULTS: ${passed} PASSED, ${failed} FAILED`);
   if (failed) process.exitCode = 1;
