@@ -1784,6 +1784,10 @@
       this.diag(stepName, 'Defaults retained for age/gender/languages');
 
       // 7. Click Continue: <ks-button-923 data-testid="common_next_button">
+      // An already-correct selection can still have an open Location popover.
+      // Close it before Continue so the first click is not consumed as dismissal.
+      const locationSearch = h.queryShadow('input[data-testid="lego-antd-select-popover-content-input"]');
+      if (locationSearch && h.isVisible(locationSearch)) await this.closeLocationDropdown();
       await this.clickCommonNextButton('Continue (Demographics page)');
       console.log('[NAVIGATION] Demographics continue clicked');
 
@@ -2218,15 +2222,29 @@
      */
     async closeLocationDropdown() {
       const h = this.helpers;
+      const searchSelector = 'input[data-testid="lego-antd-select-popover-content-input"]';
+      const search = h.queryShadow(searchSelector);
+      if (!search || !h.isVisible(search)) return;
       this.diag('CLOSE_DROPDOWN', 'Closing Location dropdown by clicking outside');
 
-      const neutralElement = h.queryShadow('#section_dom_id_targetingDemographics') ||
+      const field = this.readLiveLocationField()?.field;
+      const neutralElement = (field && h.queryShadow('[data-testid="lego-section-item-header-title"]', field)) ||
                              h.queryShadow('h1, h2, h3, h4') ||
                              document.body;
 
       if (neutralElement) {
+        for (const type of ['mousedown', 'mouseup']) {
+          neutralElement.dispatchEvent(new MouseEvent(type, { bubbles: true, composed: true, cancelable: true }));
+        }
         neutralElement.click();
-        await h.sleep(400);
+        const deadline = Date.now() + 2500;
+        while (Date.now() < deadline) {
+          if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+          const live = h.queryShadow(searchSelector);
+          if (!live || !h.isVisible(live)) return;
+          await h.sleep(100);
+        }
+        throw new Error('Location dropdown did not close before Continue.');
       }
     }
 
@@ -2273,13 +2291,9 @@
 
         // Check for presence of Website URL textarea or Ad Creative setup on next page
         const urlTextarea = h.queryShadow('textarea[data-testid="ks-text-field-index-aZM5M2"], textarea[placeholder*="http"]');
-        const nextHeader = h.queryShadow('[data-testid*="creative"], [data-testid*="ad_text"], [id*="creative"], [id*="adSetup"]');
-
-        // Or verify that demographics container is no longer the active page section
-        const locSection = h.queryShadow('#fieldRenderer-particleLocations');
-        const locGone = !locSection || !h.isVisible(locSection);
-
-        if ((urlTextarea && h.isVisible(urlTextarea)) || (nextHeader && h.isVisible(nextHeader)) || locGone) {
+        // display:contents has no wrapper rectangle, and a rerender can
+        // temporarily remove Locations. Neither proves navigation succeeded.
+        if (urlTextarea && h.isVisible(urlTextarea)) {
           navigated = true;
           break;
         }

@@ -121,6 +121,47 @@ async function test(name, fn) {
   finally { Date.now = old; }
 }
 (async () => {
+  await test('Display contents Locations is not proof of navigation; wait for actual URL textarea', async e => {
+    audience(e, { expanded: true });
+    e.document.body.appendChild(new Node('div', { 'data-testid': 'creative-sidebar' }));
+    e.later(800, () => e.document.body.appendChild(new Node('textarea', { 'data-testid': 'ks-text-field-index-aZM5M2' })));
+    await e.campaign.verifyNavigationToNextPage(1200);
+    assert(e.now() >= 1800);
+  });
+  await test('Temporarily absent Locations cannot bypass next page verification', async e => {
+    await assert.rejects(e.campaign.verifyNavigationToNextPage(1000), /Navigation to next page/);
+  });
+  await test('Supplied Continue host clicks inner shadow button exactly once', async e => {
+    const host = e.document.body.appendChild(new Node('ks-button-923', { 'data-testid': 'common_next_button' }, 'Continue'));
+    const button = host.shadow().appendChild(new Node('button', { part: 'base', type: 'button' }));
+    await e.campaign.clickCommonNextButton('Continue (Demographics page)');
+    assert.strictEqual(button.clicks, 1); assert.strictEqual(host.clicks, 0);
+  });
+  await test('Open Location dropdown closes through Locations heading before Continue', async e => {
+    audience(e, { expanded: true });
+    const field = e.document.querySelector('#fieldRenderer-particleLocations');
+    const heading = field.appendChild(new Node('ks-text-923', { 'data-testid': 'lego-section-item-header-title' }, 'Locations'));
+    const search = e.document.body.appendChild(new Node('input', { 'data-testid': 'lego-antd-select-popover-content-input' }));
+    heading.onClick = () => { search.visible = false; };
+    await e.campaign.closeLocationDropdown();
+    assert.strictEqual(heading.clicks, 1); assert.strictEqual(search.visible, false);
+  });
+  await test('Already-selected US with open popover closes it and advances through real Continue', async e => {
+    const state = audience(e, { expanded: true });
+    const field = e.document.querySelector('#fieldRenderer-particleLocations');
+    field.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    const title = field.appendChild(new Node('ks-text-923', { 'data-testid': 'lego-section-item-header-title' }, 'Locations'));
+    const search = e.document.body.appendChild(new Node('input', { 'data-testid': 'lego-antd-select-popover-content-input' }));
+    title.onClick = () => { search.visible = false; };
+    const host = e.document.body.appendChild(new Node('ks-button-923', { 'data-testid': 'common_next_button' }, 'Continue'));
+    const button = host.shadow().appendChild(new Node('button', { part: 'base' }));
+    button.onClick = () => {
+      assert.strictEqual(search.visible, false);
+      e.document.body.appendChild(new Node('textarea', { 'data-testid': 'ks-text-field-index-aZM5M2' }));
+    };
+    await e.campaign.configureDemographicsAndCountries({ targetCountries: ['United States'] });
+    assert.strictEqual(button.clicks, 1); assert.strictEqual(state.heading.clicks, 0);
+  });
   for (const layout of ['audience', 'direct', 'demographics']) {
     await test(layout + ' exact live country set skips every targeting mutation', async e => {
       if (layout === 'audience') audience(e, { expanded: true });
@@ -432,6 +473,8 @@ async function test(name, fn) {
     input.dispatchEvent = event => { if (event.type === 'input') row.visible = input.value === 'Bangladesh'; };
     label.onClick = () => { s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'Bangladesh')); };
     s.dropdown.onClick = () => { popover.visible = true; };
+    s.field.appendChild(new Node('ks-text-923', { 'data-testid': 'lego-section-item-header-title' }, 'Locations'))
+      .onClick = () => { popover.visible = false; };
     e.campaign.clickCommonNextButton = async () => {};
     e.campaign.verifyNavigationToNextPage = async () => {};
     await e.campaign.configureDemographicsAndCountries({ targetCountries: ['Bangladesh'] });
@@ -527,6 +570,8 @@ async function test(name, fn) {
     input.dispatchEvent = event => { if (event.type === 'input') row.visible = input.value === 'South Korea'; };
     label.onClick = () => { s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'South Korea')); };
     s.dropdown.onClick = () => { popover.visible = true; };
+    s.field.appendChild(new Node('ks-text-923', { 'data-testid': 'lego-section-item-header-title' }, 'Locations'))
+      .onClick = () => { popover.visible = false; };
     e.campaign.clickCommonNextButton = async () => {};
     e.campaign.verifyNavigationToNextPage = async () => {};
 
