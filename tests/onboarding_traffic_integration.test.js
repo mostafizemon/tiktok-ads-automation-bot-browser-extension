@@ -357,6 +357,93 @@ function attachSwitchToFullVersionButton(env, suffix = 'pz4ceaj9') {
 }
 
 /**
+ * Build the real TikTok "Switch to custom mode" button and confirmation modal DOM structure
+ */
+function attachSwitchToCustomModeButton(env, suffix = 'q37k4f39') {
+  const host = env.document.body.appendChild(new MockDOMNode(`ks-button-${suffix}`, {
+    variant: 'default',
+    loading: 'false',
+    disabled: 'false'
+  }, 'Switch to custom mode'));
+
+  const shadow = host.attachShadow();
+  const innerButton = shadow.appendChild(new MockDOMNode('button', {
+    part: 'self'
+  }));
+  innerButton.appendChild(new MockDOMNode('slot'));
+
+  const state = {
+    host,
+    innerButton,
+    modal: null,
+    exitBtn: null,
+    stayBtn: null,
+    modalClosed: false
+  };
+
+  innerButton.onClick = () => {
+    env.callLog.push('CLICK_SWITCH_TO_CUSTOM_MODE');
+
+    // Display confirmation modal
+    const modalHost = env.document.body.appendChild(new MockDOMNode('div', { class: 'modal__container' }));
+    const wrapper = modalHost.appendChild(new MockDOMNode('div', { class: 'modal__wrapper modal__wrapper--md', part: 'wrapper' }));
+    state.modal = wrapper;
+
+    const header = wrapper.appendChild(new MockDOMNode('div', { class: 'modal__header', part: 'header' }));
+    const headerTitle = header.appendChild(new MockDOMNode('div', { class: 'modal__header-title' }));
+    const headerSlot = headerTitle.appendChild(new MockDOMNode('slot', { name: 'header' }, 'Exit guided mode and switch to custom mode?'));
+    headerSlot.assignedElements = () => [];
+
+    const body = wrapper.appendChild(new MockDOMNode('div', { class: 'modal__body-contener' }));
+    body.appendChild(new MockDOMNode('slot', {}, 'No Data'));
+
+    const footer = wrapper.appendChild(new MockDOMNode('div', { class: 'modal__footer', part: 'footer' }));
+    const btns = footer.appendChild(new MockDOMNode('div', { class: 'modal__footer__btns' }));
+
+    // cancel-btn slot = "Exit"
+    const exitHost = btns.appendChild(new MockDOMNode(`ks-button-${suffix}`, {
+      disabled: 'false',
+      loading: 'false'
+    }));
+    const exitShadow = exitHost.attachShadow();
+    const exitSelf = exitShadow.appendChild(new MockDOMNode('button', { part: 'self' }));
+    exitHost.appendChild(new MockDOMNode('slot', { name: 'cancel-btn' }, 'Exit'));
+
+    // confirm-btn slot = "Stay"
+    const stayHost = btns.appendChild(new MockDOMNode(`ks-button-${suffix}`, {
+      disabled: 'false',
+      loading: 'false'
+    }));
+    const stayShadow = stayHost.attachShadow();
+    const staySelf = stayShadow.appendChild(new MockDOMNode('button', {
+      part: 'self',
+      class: 'button--type-contained button--color-primary'
+    }));
+    stayHost.appendChild(new MockDOMNode('slot', { name: 'confirm-btn' }, 'Stay'));
+
+    state.exitBtn = exitSelf;
+    state.stayBtn = staySelf;
+
+    exitSelf.onClick = () => {
+      env.callLog.push('CLICK_EXIT_BUTTON');
+      wrapper.visible = false;
+      modalHost.visible = false;
+      host.visible = false;
+      state.modalClosed = true;
+      env.callLog.push('MODAL_CLOSED');
+
+      attachStandardTrafficObjective(env);
+    };
+
+    staySelf.onClick = () => {
+      env.callLog.push('CLICK_STAY_BUTTON');
+    };
+  };
+
+  return state;
+}
+
+/**
  * Build standard campaign Traffic objective radio control in DOM
  */
 function attachStandardTrafficObjective(env) {
@@ -693,6 +780,51 @@ function attachStandardTrafficObjective(env) {
     await env.campaign.ensureInitialCreationModeReady();
     assert.strictEqual(state2.innerButton.clicks, 1);
     assert.strictEqual(state2.confirmBtn.clicks, 1);
+  });
+
+  // Test 23: Real-browser flow: Switch to custom mode -> Exit guided mode and switch to custom mode? -> Exit clicked -> Traffic radio selected
+  await test('23: Real-browser flow: Switch to custom mode -> Exit modal -> Exit clicked -> Traffic radio selected', async env => {
+    const state = attachSwitchToCustomModeButton(env);
+
+    await env.campaign.ensureInitialCreationModeReady();
+    assert.strictEqual(state.innerButton.clicks, 1, 'Switch to custom mode must be clicked');
+    assert.strictEqual(state.exitBtn.clicks, 1, 'Exit button inside shadow DOM must be clicked');
+    assert.strictEqual(state.stayBtn.clicks, 0, 'Stay button must NOT be clicked');
+    assert.strictEqual(state.modalClosed, true, 'Confirmation modal must close before continuing');
+
+    await env.campaign.selectTrafficObjective();
+    assert.ok(env.callLog.includes('CLICK_TRAFFIC_RADIO'), 'Traffic radio must be selected');
+
+    const exitIdx = env.callLog.indexOf('CLICK_EXIT_BUTTON');
+    const trafficIdx = env.callLog.indexOf('CLICK_TRAFFIC_RADIO');
+    assert.ok(exitIdx < trafficIdx, 'Exit click must occur before Traffic selection');
+  });
+
+  // Test 24: Stay button is never clicked during Switch to custom mode integration flow
+  await test('24: Stay button is never clicked during Switch to custom mode integration flow', async env => {
+    const state = attachSwitchToCustomModeButton(env);
+    await env.campaign.handleCustomModeFlow();
+    assert.strictEqual(state.stayBtn.clicks, 0, 'Stay button must never be clicked');
+    assert.strictEqual(state.exitBtn.clicks, 1, 'Exit button must be clicked');
+  });
+
+  // Test 25: Multi-campaign onboarding with Switch to custom mode executes sequence for each campaign
+  await test('25: Multi-campaign onboarding with Switch to custom mode executes sequence for each campaign', async env => {
+    // Campaign 1
+    const state1 = attachSwitchToCustomModeButton(env, 'custom-1');
+    await env.campaign.ensureInitialCreationModeReady();
+    assert.strictEqual(state1.innerButton.clicks, 1);
+    assert.strictEqual(state1.exitBtn.clicks, 1);
+    assert.strictEqual(state1.stayBtn.clicks, 0);
+
+    for (const c of env.document.body.children) c.visible = false;
+
+    // Campaign 2
+    const state2 = attachSwitchToCustomModeButton(env, 'custom-2');
+    await env.campaign.ensureInitialCreationModeReady();
+    assert.strictEqual(state2.innerButton.clicks, 1);
+    assert.strictEqual(state2.exitBtn.clicks, 1);
+    assert.strictEqual(state2.stayBtn.clicks, 0);
   });
 
   console.log('====================================================');

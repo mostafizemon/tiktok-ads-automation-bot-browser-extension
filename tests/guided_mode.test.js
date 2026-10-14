@@ -282,6 +282,191 @@ function fullVersion(env, {
   return state;
 }
 
+function customMode(env, {
+  suffix = 'q37k4f39',
+  modalSuffix = 'q37k4f39',
+  delay = 0,
+  assigned = false,
+  close = true,
+  noForm = false,
+  disabledDelay = 0,
+  rerenderModal = false,
+  direct = false,
+  hasNoDataBody = true
+} = {}) {
+  const switchHost = env.document.body.appendChild(new Node(`ks-button-${suffix}`, {
+    variant: 'default', loading: 'false', disabled: 'false', 'ks-button': '', class: ''
+  }, '  Switch   to custom mode  '));
+  const inner = switchHost.shadow().appendChild(new Node('button', {
+    type: 'button',
+    class: 'button button--md button--angle',
+    part: 'self'
+  }));
+  inner.appendChild(new Node('slot'));
+
+  const state = {
+    host: switchHost,
+    inner,
+    modal: null,
+    exit: null,
+    stay: null,
+    exitHost: null,
+    stayHost: null,
+    exitSlot: null,
+    staySlot: null,
+    headerSlot: null
+  };
+
+  const show = () => {
+    const modalHost = env.document.body.appendChild(new Node('ks-modal-custom'));
+    const wrapper = modalHost.shadow().appendChild(new Node('div', {
+      class: 'modal__wrapper modal__wrapper--md',
+      part: 'wrapper',
+      style: 'transform: scale(1); opacity: 1;'
+    }));
+    state.modal = wrapper;
+
+    const header = wrapper.appendChild(new Node('div', { class: 'modal__header', part: 'header' }));
+    const headerTitle = header.appendChild(new Node('div', { class: 'modal__header-title' }));
+    const headerSlot = headerTitle.appendChild(new Node('slot', { name: 'header' }, assigned ? '' : 'Exit guided mode and switch to custom mode?'));
+    if (assigned) {
+      const headerText = new Node('span', {}, 'Exit guided mode and switch to custom mode?');
+      headerTitle.appendChild(headerText);
+      headerText.assignedSlot = headerSlot;
+      headerSlot.assignedElements = () => [headerText];
+    } else {
+      headerSlot.assignedElements = () => [];
+    }
+    state.headerSlot = headerSlot;
+
+    if (hasNoDataBody) {
+      const body = wrapper.appendChild(new Node('div', { class: 'modal__body-contener' }));
+      body.appendChild(new Node('slot', {}, 'No Data'));
+    }
+
+    const footer = wrapper.appendChild(new Node('div', { class: 'modal__footer', part: 'footer' }));
+    const btns = footer.appendChild(new Node('div', { class: 'modal__footer__btns' }));
+
+    // Exit in cancel-btn slot
+    const exitHost = btns.appendChild(new Node(`ks-button-${modalSuffix}`, {
+      'ks-button': '',
+      disabled: 'false'
+    }));
+    state.exitHost = exitHost;
+    const exitInner = exitHost.shadow().appendChild(new Node('button', {
+      type: 'button',
+      part: 'self',
+      ...(disabledDelay ? { disabled: 'disabled' } : {})
+    }));
+    exitInner.appendChild(new Node('slot'));
+    const exitSlot = exitHost.appendChild(new Node('slot', { name: 'cancel-btn' }, assigned ? '' : 'Exit'));
+    if (assigned) {
+      const exitText = new Node('span', {}, 'Exit');
+      exitHost.appendChild(exitText);
+      exitText.assignedSlot = exitSlot;
+      exitSlot.assignedElements = () => [exitText];
+    } else {
+      exitSlot.assignedElements = () => [];
+    }
+    state.exit = exitInner;
+    state.exitSlot = exitSlot;
+
+    // Stay in confirm-btn slot
+    const stayHost = btns.appendChild(new Node(`ks-button-${modalSuffix}`, {
+      'ks-button': '',
+      disabled: 'false'
+    }));
+    state.stayHost = stayHost;
+    const stayInner = stayHost.shadow().appendChild(new Node('button', {
+      type: 'button',
+      class: 'button--type-contained button--color-primary',
+      part: 'self'
+    }));
+    stayInner.appendChild(new Node('slot'));
+    const staySlot = stayHost.appendChild(new Node('slot', { name: 'confirm-btn' }, assigned ? '' : 'Stay'));
+    if (assigned) {
+      const stayText = new Node('span', {}, 'Stay');
+      stayHost.appendChild(stayText);
+      stayText.assignedSlot = staySlot;
+      staySlot.assignedElements = () => [stayText];
+    } else {
+      staySlot.assignedElements = () => [];
+    }
+    state.stay = stayInner;
+    state.staySlot = staySlot;
+
+    exitInner.onClick = () => {
+      if (close) {
+        modalHost.visible = false;
+        wrapper.visible = false;
+      }
+      switchHost.visible = false;
+      if (!noForm) env.normal();
+    };
+
+    if (disabledDelay) {
+      env.later(disabledDelay, () => delete exitInner.attrs.disabled);
+    }
+
+    if (rerenderModal) {
+      env.later(200, () => {
+        modalHost.visible = false;
+        wrapper.visible = false;
+        const newHost = env.document.body.appendChild(new Node('ks-modal-custom-rerendered'));
+        const newWrapper = newHost.shadow().appendChild(new Node('div', {
+          class: 'modal__wrapper modal__wrapper--md',
+          part: 'wrapper',
+          style: 'transform: scale(1); opacity: 1;'
+        }));
+        const newHeader = newWrapper.appendChild(new Node('div', { class: 'modal__header', part: 'header' }));
+        const newTitle = newHeader.appendChild(new Node('div', { class: 'modal__header-title' }));
+        newTitle.appendChild(new Node('slot', { name: 'header' }, 'Exit guided mode and switch to custom mode?'));
+
+        const newFooter = newWrapper.appendChild(new Node('div', { class: 'modal__footer', part: 'footer' }));
+        const newBtns = newFooter.appendChild(new Node('div', { class: 'modal__footer__btns' }));
+
+        const newExitHost = newBtns.appendChild(new Node(`ks-button-${modalSuffix}`, { 'ks-button': '', disabled: 'false' }));
+        const newExitInner = newExitHost.shadow().appendChild(new Node('button', { type: 'button', part: 'self' }));
+        newExitHost.appendChild(new Node('slot', { name: 'cancel-btn' }, 'Exit'));
+
+        const newStayHost = newBtns.appendChild(new Node(`ks-button-${modalSuffix}`, { 'ks-button': '', disabled: 'false' }));
+        const newStayInner = newStayHost.shadow().appendChild(new Node('button', {
+          type: 'button',
+          class: 'button--type-contained button--color-primary',
+          part: 'self'
+        }));
+        newStayHost.appendChild(new Node('slot', { name: 'confirm-btn' }, 'Stay'));
+
+        newExitInner.onClick = () => {
+          if (close) {
+            newHost.visible = false;
+            newWrapper.visible = false;
+          }
+          switchHost.visible = false;
+          if (!noForm) env.normal();
+        };
+
+        state.exit = newExitInner;
+        state.stay = newStayInner;
+        state.modal = newWrapper;
+      });
+    }
+
+    assert.strictEqual(global.PopupHandler.classifyDialog(wrapper).type, 'WORKFLOW_CRITICAL');
+  };
+
+  inner.onClick = () => {
+    if (direct) {
+      switchHost.visible = false;
+      if (!noForm) env.normal();
+      return;
+    }
+    if (delay) env.later(delay, show); else show();
+  };
+
+  return state;
+}
+
 (async () => {
   let passed = 0; let failed = 0;
   const realNow = Date.now;
@@ -584,6 +769,165 @@ function fullVersion(env, {
     await env.handler.ensureCustomMode();
     assert.strictEqual(second.inner.clicks, 1);
     assert.strictEqual(second.confirm.clicks, 1);
+  });
+
+  await test('Create -> Switch to custom mode -> Exit guided mode and switch to custom mode? -> Exit clicked, Stay never clicked (q37k4f39)', async env => {
+    let state;
+    const create = env.document.body.appendChild(new Node('button', {}, 'Create'));
+    create.onClick = () => { state = customMode(env, { suffix: 'q37k4f39', modalSuffix: 'q37k4f39' }); };
+    await env.campaign.clickCreateCampaign();
+    await env.campaign.handleCustomModeFlow();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+    assert.strictEqual(state.stay.clicks, 0);
+  });
+
+  await test('Switch to custom mode -> Exit with assigned elements in header and cancel-btn slots', async env => {
+    const state = customMode(env, { assigned: true });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+    assert.strictEqual(state.stay.clicks, 0);
+  });
+
+  await test('Dynamic ks-button suffix supported in custom mode confirmation modal', async env => {
+    const state = customMode(env, { suffix: 'btn-dyn-1234', modalSuffix: 'btn-modal-5678' });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+    assert.strictEqual(state.stay.clicks, 0);
+  });
+
+  await test('Body containing "No Data" does not reject modal or trigger CTA recovery', async env => {
+    const state = customMode(env, { hasNoDataBody: true });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+    assert.strictEqual(state.stay.clicks, 0);
+  });
+
+  await test('Stay button with primary style in confirm-btn slot is never clicked', async env => {
+    const state = customMode(env);
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.stay.clicks, 0);
+    assert.strictEqual(state.exit.clicks, 1);
+  });
+
+  await test('Delayed rendering of custom mode confirmation modal', async env => {
+    const state = customMode(env, { delay: 600 });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+    assert.strictEqual(state.stay.clicks, 0);
+  });
+
+  await test('Exit button initially disabled, waits until enabled, then clicked', async env => {
+    const state = customMode(env, { disabledDelay: 500 });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+    assert.strictEqual(state.stay.clicks, 0);
+  });
+
+  await test('Modal rerenders after switch click and resolves to reacquired Exit button', async env => {
+    const state = customMode(env, { rerenderModal: true });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+    assert.strictEqual(state.stay.clicks, 0);
+  });
+
+  await test('Modal failing to close stops with [ONBOARDING ERROR] Modal remained open', async env => {
+    const state = customMode(env, { close: false });
+    await assert.rejects(env.handler.ensureCustomMode(750), /Modal remained open/);
+    assert.strictEqual(state.exit.clicks, 1);
+  });
+
+  await test('Standard creation form missing after modal closes stops with [ONBOARDING ERROR]', async env => {
+    customMode(env, { noForm: true });
+    await assert.rejects(env.handler.ensureCustomMode(750), /Standard form did not become ready/);
+  });
+
+  await test('Unrelated Exit button outside modal is ignored', async env => {
+    const state = customMode(env);
+    const outsideHost = env.document.body.appendChild(new Node('ks-button-unrelated', { 'ks-button': '', disabled: 'false' }));
+    const outsideBtn = outsideHost.shadow().appendChild(new Node('button', { part: 'self' }, 'Exit'));
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(outsideBtn.clicks, 0);
+    assert.strictEqual(state.exit.clicks, 1);
+  });
+
+  await test('Unrelated Confirm button outside modal is ignored', async env => {
+    const state = customMode(env);
+    const outsideConfirm = env.document.body.appendChild(new Node('button', {}, 'Confirm'));
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(outsideConfirm.clicks, 0);
+    assert.strictEqual(state.exit.clicks, 1);
+    assert.strictEqual(state.stay.clicks, 0);
+  });
+
+  await test('PopupHandler classifies custom-mode modal as WORKFLOW_CRITICAL and does not auto-dismiss', async env => {
+    const state = customMode(env);
+    state.inner.click();
+    assert.ok(state.modal);
+    assert.strictEqual(global.PopupHandler.classifyDialog(state.modal).type, 'WORKFLOW_CRITICAL');
+    assert.strictEqual(global.PopupHandler.isTutorialModalElement(state.modal), false);
+    global.PopupHandler.checkForKnownTutorialPopup();
+    assert.strictEqual(state.exit.clicks, 0);
+    assert.strictEqual(state.stay.clicks, 0);
+  });
+
+  await test('Traffic selection does not proceed while custom-mode modal is still open', async env => {
+    const state = customMode(env, { delay: 0 });
+    state.inner.click();
+    assert.ok(state.modal);
+    env.normal();
+    assert.strictEqual(env.handler.isRegularCreationInterfacePresent(), false);
+    state.exit.click();
+    assert.strictEqual(env.handler.isRegularCreationInterfacePresent(), true);
+  });
+
+  await test('Repeated handler invocation is idempotent for custom mode', async env => {
+    const state = customMode(env);
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+  });
+
+  await test('Cancel safety filter permits Exit for custom-mode modal while continuing to block Cancel for full-version modal', async env => {
+    // 1. Verify custom-mode Exit is permitted
+    const customState = customMode(env);
+    customState.inner.click();
+    const customExit = env.handler.findCustomModeExitAction(customState.modal);
+    assert.strictEqual(customExit, customState.exit);
+    assert.strictEqual(env.handler.isCancelOrCloseButton(customState.exit, customState.exitHost), false);
+
+    // 2. Verify full-version Cancel is blocked
+    for (const node of env.document.body.children) node.visible = false;
+    const fullState = fullVersion(env);
+    fullState.inner.click();
+    assert.strictEqual(env.handler.isCancelOrCloseButton(fullState.cancel, fullState.cancel.parentElement), true);
+    const fullConfirm = env.handler.findFullVersionConfirmAction(fullState.modal);
+    assert.strictEqual(fullConfirm, fullState.confirm);
+  });
+
+  await test('Sequential multi-campaigns each switch to custom mode and exit once', async env => {
+    const first = customMode(env, { suffix: 'custom-camp-1', modalSuffix: 'custom-modal-1' });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(first.inner.clicks, 1);
+    assert.strictEqual(first.exit.clicks, 1);
+    assert.strictEqual(first.stay.clicks, 0);
+
+    for (const node of env.document.body.children) node.visible = false;
+
+    const second = customMode(env, { suffix: 'custom-camp-2', modalSuffix: 'custom-modal-2' });
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(second.inner.clicks, 1);
+    assert.strictEqual(second.exit.clicks, 1);
+    assert.strictEqual(second.stay.clicks, 0);
   });
   console.log(`GUIDED MODE TEST RESULTS: ${passed} PASSED, ${failed} FAILED`);
   if (failed) process.exitCode = 1;

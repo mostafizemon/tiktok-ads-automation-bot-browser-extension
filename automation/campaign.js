@@ -270,7 +270,8 @@
 
       // Double-check no pending onboarding remains before querying for Traffic radio label
       if (global.CustomModeHandler) {
-        const hasPendingOnboarding = global.CustomModeHandler.findFullVersionConfirmModal?.() ||
+        const hasPendingOnboarding = global.CustomModeHandler.findCustomModeConfirmModal?.() ||
+                                     global.CustomModeHandler.findFullVersionConfirmModal?.() ||
                                      global.CustomModeHandler.findGuidedModeHost?.('Switch to full version') ||
                                      global.CustomModeHandler.findGuidedModeHost?.('Exit guided mode') ||
                                      global.CustomModeHandler.findSwitchToCustomModeButton?.();

@@ -33,7 +33,9 @@
       if (!helpers) return false;
 
       // 1. Guard against active mode-switch actions or confirmation modals
+      if (this.findCustomModeConfirmModal()) return false;
       if (this.findFullVersionConfirmModal()) return false;
+      if (this.findLegacyStayExitDialog()) return false;
       if (this.findGuidedModeHost('Switch to full version')) return false;
       if (this.findGuidedModeHost('Exit guided mode')) return false;
       if (this.findSwitchToCustomModeButton()) return false;
@@ -197,6 +199,160 @@
       return false;
     }
 
+    findLegacyStayExitDialog() {
+      const candidates = this.visibleDialogs();
+      for (const cand of candidates) {
+        const text = (cand.innerText || cand.textContent || '').toLowerCase();
+        if (text.includes('stay') && text.includes('exit')) {
+          return cand;
+        }
+      }
+      return null;
+    }
+
+    findCustomModeConfirmModal() {
+      const candidates = this.visibleDialogs();
+      for (const cand of candidates) {
+        if (this.isModalHeaderMatching(cand, 'Exit guided mode and switch to custom mode?')) {
+          return cand;
+        }
+      }
+      const headerSlots = this.queryOpen('slot[name="header"]');
+      for (const slot of headerSlots) {
+        const assigned = slot.assignedElements?.({ flatten: true }) || [];
+        const text = assigned.length ? assigned.map(el => this.normalizedText(el)).join(' ').trim() : this.normalizedText(slot);
+        if (text === 'Exit guided mode and switch to custom mode?' && global.AutomationHelpers?.isVisible(slot)) {
+          let current = slot;
+          while (current && current !== document.body) {
+            if (current.matches?.('[part="wrapper"], [role="dialog"], [aria-modal="true"], [class*="modal"]') ||
+                current.tagName?.toLowerCase().startsWith('ks-modal-')) {
+              if (global.AutomationHelpers?.isVisible(current)) return current;
+            }
+            current = this.composedParent(current);
+          }
+        }
+      }
+      return null;
+    }
+
+    resolveCustomModeExit(modal) {
+      if (!modal || !global.AutomationHelpers?.isVisible(modal)) {
+        return { action: null, exitSlotFound: false, hostFound: false, innerFound: false };
+      }
+
+      const footers = this.queryOpen('[part="footer"], .modal__footer, [class*="modal__footer"]', modal);
+      const footer = footers[0] || modal;
+
+      const cancelSlots = this.queryOpen('slot[name="cancel-btn"]', footer);
+      if (!cancelSlots.length) {
+        cancelSlots.push(...this.queryOpen('slot[name="cancel-btn"]', modal));
+      }
+
+      const exitSlots = cancelSlots.filter(slot => {
+        const assigned = slot.assignedElements?.({ flatten: true }) || [];
+        const label = assigned.length ? assigned.map(el => this.normalizedText(el)).join(' ').trim() : this.normalizedText(slot);
+        return label === 'Exit';
+      });
+
+      const exitSlotFound = exitSlots.length > 0;
+      let hostFound = false;
+      let innerFound = false;
+      const actions = new Set();
+
+      for (const slot of exitSlots) {
+        let host = null;
+        let current = slot;
+        while (current && current !== modal) {
+          if (current.tagName?.toLowerCase().startsWith('ks-button-') || current.hasAttribute?.('ks-button')) {
+            host = current;
+            break;
+          }
+          current = this.composedParent(current);
+        }
+
+        if (!host) {
+          const assigned = slot.assignedElements?.({ flatten: true }) || [];
+          for (const el of assigned) {
+            let cur = el;
+            while (cur && cur !== modal) {
+              if (cur.tagName?.toLowerCase().startsWith('ks-button-') || cur.hasAttribute?.('ks-button')) {
+                host = cur;
+                break;
+              }
+              cur = this.composedParent(cur);
+            }
+            if (host) break;
+          }
+        }
+
+        if (host) {
+          hostFound = true;
+          const button = host.shadowRoot?.querySelector('button[part="self"], button[part="base"], button');
+          if (button) {
+            innerFound = true;
+            if (this.isEnabledAction(host) && this.isEnabledAction(button)) {
+              actions.add(button);
+            }
+          }
+        }
+      }
+
+      // Fallback 1: Look for ks-button host with text 'Exit' inside footer
+      if (!actions.size) {
+        const buttonHosts = this.queryOpen('*', footer).filter(el =>
+          (el.tagName?.toLowerCase().startsWith('ks-button-') || el.hasAttribute?.('ks-button')) &&
+          this.normalizedText(el) === 'Exit'
+        );
+        for (const host of buttonHosts) {
+          hostFound = true;
+          const button = host.shadowRoot?.querySelector('button[part="self"], button[part="base"], button');
+          if (button) {
+            innerFound = true;
+            if (this.isEnabledAction(host) && this.isEnabledAction(button)) {
+              actions.add(button);
+            }
+          }
+        }
+      }
+
+      // Fallback 2: Standard button elements with text 'Exit' inside footer (e.g. legacy mocks)
+      if (!actions.size) {
+        const standardButtons = this.queryOpen('button, [role="button"]', footer).filter(el =>
+          this.normalizedText(el) === 'Exit'
+        );
+        for (const btn of standardButtons) {
+          hostFound = true;
+          innerFound = true;
+          if (this.isEnabledAction(btn)) {
+            actions.add(btn);
+          }
+        }
+      }
+
+      if (actions.size > 1) {
+        throw new Error('[ONBOARDING] Multiple Exit actions found in modal; refusing ambiguous action.');
+      }
+
+      return {
+        action: [...actions][0] || null,
+        exitSlotFound,
+        hostFound,
+        innerFound
+      };
+    }
+
+    findCustomModeExitAction(modal) {
+      return this.resolveCustomModeExit(modal).action;
+    }
+
+    logCustomModeExitDiagnostics(modal) {
+      const details = this.resolveCustomModeExit(modal);
+      console.log(`[ONBOARDING] Exit slot found: ${details.exitSlotFound}`);
+      console.log(`[ONBOARDING] Exit button host found: ${details.hostFound}`);
+      console.log(`[ONBOARDING] Exit inner button found: ${details.innerFound}`);
+      return details;
+    }
+
     findFullVersionConfirmModal() {
       const candidates = this.visibleDialogs();
       for (const cand of candidates) {
@@ -293,10 +449,14 @@
     }
 
     isCancelOrCloseButton(button, host) {
-      if (this.normalizedText(button) === 'Cancel' || this.normalizedText(host) === 'Cancel') return true;
-      if (button.closest?.('slot[name="cancel-btn"]') || host.closest?.('slot[name="cancel-btn"]')) return true;
-      if (button.getAttribute?.('part') === 'closeIcon' || host.getAttribute?.('part') === 'closeIcon') return true;
-      if (button.classList?.contains('modal__close') || host.classList?.contains('modal__close')) return true;
+      const owningHost = host?.host || host;
+      if (this.normalizedText(button) === 'Cancel' || this.normalizedText(owningHost) === 'Cancel') return true;
+      const cancelSlot = button?.closest?.('slot[name="cancel-btn"]') ||
+                         owningHost?.closest?.('slot[name="cancel-btn"]') ||
+                         owningHost?.querySelector?.('slot[name="cancel-btn"]');
+      if (cancelSlot && this.normalizedText(cancelSlot) === 'Cancel') return true;
+      if (button?.getAttribute?.('part') === 'closeIcon' || owningHost?.getAttribute?.('part') === 'closeIcon') return true;
+      if (button?.classList?.contains('modal__close') || owningHost?.classList?.contains('modal__close')) return true;
       return false;
     }
 
@@ -332,6 +492,7 @@
 
     ownsGuidedDialog(element) {
       if (!element) return false;
+      if (this.isModalHeaderMatching(element, 'Exit guided mode and switch to custom mode?')) return true;
       if (this.isModalHeaderMatching(element, 'Switch to full version?')) return true;
       if (this.queryOpen('slot[name="confirm-btn"]', element).some(slot => {
         const assigned = slot.assignedElements?.({ flatten: true }) || [];
@@ -451,9 +612,122 @@
       return true;
     }
 
+    async handleSwitchToCustomMode(switchBtn, timeoutMs = 8000) {
+      this.checkAbort();
+
+      let transition = this.guidedTransition;
+      if (!transition || !transition.customMode) {
+        transition = {
+          customMode: true,
+          switchBtn: switchBtn || null,
+          clickedSwitch: switchBtn ? false : true,
+          exitClicked: false,
+          dialog: null
+        };
+        this.guidedTransition = transition;
+      }
+
+      if (!transition.clickedSwitch) {
+        const activeBtn = this.findSwitchToCustomModeButton() || switchBtn;
+        this.checkAbort();
+        if (!activeBtn || !this.isEnabledAction(activeBtn)) {
+          console.error('[ONBOARDING ERROR] Switch button not clickable');
+          throw new Error('[ONBOARDING ERROR] Switch button not clickable');
+        }
+
+        console.log('[ONBOARDING] Switch to custom mode detected');
+        console.log('[ONBOARDING] Clicking switch button');
+        console.log('[ONBOARDING] Clicking Switch to custom mode');
+        transition.clickedSwitch = true;
+        transition.switchBtn = activeBtn;
+        global.AutomationHelpers.safeClick(activeBtn, 'Switch to custom mode button');
+        console.log('[ONBOARDING] Switch to custom mode clicked');
+      }
+
+      if (!transition.exitClicked) {
+        console.log('[ONBOARDING] Waiting for custom-mode modal');
+
+        const stateMatch = await this.waitForMode(() => {
+          const modal = this.findCustomModeConfirmModal() || this.findLegacyStayExitDialog();
+          if (modal) {
+            const exitBtn = this.findCustomModeExitAction(modal) || this.findExitButtonInDialog(modal);
+            return { modal, exitBtn };
+          }
+          if (this.isRegularCreationInterfacePresent()) {
+            return { direct: true };
+          }
+          return null;
+        }, timeoutMs, '[ONBOARDING ERROR] Custom-mode modal not detected');
+
+        if (stateMatch.direct) {
+          console.log('[ONBOARDING] Custom mode opened directly');
+          console.log('[ONBOARDING] Standard form ready');
+          console.log('[ONBOARDING] Standard creation form ready');
+          console.log('[ONBOARDING] Continuing to Traffic objective');
+          this.guidedTransition = null;
+          return true;
+        }
+
+        const modal = stateMatch.modal;
+        transition.dialog = modal;
+        console.log('[ONBOARDING] Modal title detected: Exit guided mode and switch to custom mode?');
+
+        let exitBtn = stateMatch.exitBtn;
+        if (!exitBtn) {
+          exitBtn = await this.waitForMode(() => {
+            const currentModal = this.findCustomModeConfirmModal() || this.findLegacyStayExitDialog() || modal;
+            return this.findCustomModeExitAction(currentModal) || this.findExitButtonInDialog(currentModal);
+          }, Math.min(timeoutMs, 4000), '[ONBOARDING ERROR] Exit inner button not found');
+        }
+
+        this.logCustomModeExitDiagnostics(modal);
+
+        if (!exitBtn) {
+          throw new Error('[ONBOARDING ERROR] Exit inner button not found');
+        }
+
+        if (!this.isEnabledAction(exitBtn)) {
+          throw new Error('[ONBOARDING ERROR] Exit button disabled');
+        }
+
+        this.checkAbort();
+
+        console.log('[ONBOARDING] Clicking Exit');
+        transition.exitClicked = true;
+
+        try {
+          exitBtn.click();
+          console.log('[ONBOARDING] Exit clicked');
+        } catch (err) {
+          console.error('[ONBOARDING ERROR] Exit click unsuccessful', err);
+          throw new Error('[ONBOARDING ERROR] Exit click unsuccessful');
+        }
+      }
+
+      await this.waitForMode(() => {
+        const activeModal = this.findCustomModeConfirmModal() || this.findLegacyStayExitDialog();
+        if (activeModal && global.AutomationHelpers.isVisible(activeModal)) return false;
+        if (transition.dialog && global.AutomationHelpers.isVisible(transition.dialog)) return false;
+        return true;
+      }, timeoutMs, '[ONBOARDING ERROR] Modal remained open');
+
+      console.log('[ONBOARDING] Modal closed');
+
+      await this.waitForMode(() => this.isRegularCreationInterfacePresent(), timeoutMs,
+        '[ONBOARDING ERROR] Standard form did not become ready');
+
+      console.log('[ONBOARDING] Standard creation form ready');
+      console.log('[ONBOARDING] Continuing to Traffic objective');
+      this.guidedTransition = null;
+      return true;
+    }
+
     async exitGuidedMode(host, timeoutMs) {
       if (this.normalizedText(host) === 'Switch to full version' || this.guidedTransition?.fullVersion) {
         return this.handleSwitchToFullVersion(host, timeoutMs);
+      }
+      if (this.normalizedText(host) === 'Switch to custom mode' || this.guidedTransition?.customMode) {
+        return this.handleSwitchToCustomMode(host, timeoutMs);
       }
       let transition = this.guidedTransition;
       if (!transition || transition.host !== host) {
@@ -540,6 +814,9 @@
         if (this.guidedTransition.fullVersion) {
           return this.handleSwitchToFullVersion(this.guidedTransition.host, timeoutMs);
         }
+        if (this.guidedTransition.customMode) {
+          return this.handleSwitchToCustomMode(this.guidedTransition.switchBtn, timeoutMs);
+        }
         return this.exitGuidedMode(this.guidedTransition.host, timeoutMs);
       }
 
@@ -550,10 +827,17 @@
         return this.handleSwitchToFullVersion(null, timeoutMs);
       }
 
+      const activeCustomModal = this.findCustomModeConfirmModal() || this.findLegacyStayExitDialog();
+      if (activeCustomModal) {
+        return this.handleSwitchToCustomMode(null, timeoutMs);
+      }
+
       const ready = await this.waitForMode(() => {
         // Priority 1: Check for active workflow-critical modal
         const confirmModal = this.findFullVersionConfirmModal();
         if (confirmModal) return { confirmModal };
+        const customModal = this.findCustomModeConfirmModal() || this.findLegacyStayExitDialog();
+        if (customModal) return { customModal };
 
         // Priority 2: Check for active supported mode-switch action
         const fullHost = this.findGuidedModeHost('Switch to full version');
@@ -573,6 +857,7 @@
       }, timeoutMs, 'Neither Guided Mode nor the normal campaign form became ready.');
 
       if (ready.confirmModal) return this.handleSwitchToFullVersion(null, timeoutMs);
+      if (ready.customModal) return this.handleSwitchToCustomMode(null, timeoutMs);
       if (ready.fullHost) return this.handleSwitchToFullVersion(ready.fullHost, timeoutMs);
       if (ready.guidedHost) return this.exitGuidedMode(ready.guidedHost, timeoutMs);
       if (ready.normal) {
@@ -583,45 +868,7 @@
         console.log('[ONBOARDING] Skipped because: Standard campaign form already ready without onboarding button');
         return true;
       }
-      const switchBtn = ready.switchBtn;
-
-      // Case A: Found "Switch to custom mode" button
-      this.log('Clicking "Switch to custom mode" button...');
-      helpers.safeClick(switchBtn, 'Switch to custom mode button');
-
-      // Wait for confirmation dialog containing "Stay" and "Exit"
-      this.log('Waiting for confirmation modal (Stay / Exit)...');
-      const dialog = await this.waitForCustomModeConfirmationDialog(6000);
-
-      if (dialog) {
-        this.log('Confirmation dialog detected. Locating "Exit" button...');
-        const exitBtn = this.findExitButtonInDialog(dialog);
-        if (exitBtn) {
-          this.log('Clicking "Exit" button in confirmation dialog...');
-          helpers.safeClick(exitBtn, 'Exit confirmation button');
-        } else {
-          this.warn('Could not locate specific "Exit" button inside dialog. Searching globally in modal...');
-          const globalExit = helpers.findButtonByExactText('Exit', dialog);
-          if (globalExit) {
-            helpers.safeClick(globalExit, 'Exit button fallback');
-          }
-        }
-      } else {
-        this.log('No Stay/Exit modal appeared; transitioned directly.');
-      }
-
-      // Wait for regular creation interface to become ready
-      this.log('Waiting for regular creation interface after mode switch...');
-      const readyStart = Date.now();
-      while (Date.now() - readyStart < 8000) {
-        if (this.isRegularCreationInterfacePresent()) {
-          this.log('Regular campaign creation interface successfully loaded.');
-          return true;
-        }
-        await helpers.sleep(400);
-      }
-
-      throw new Error('Normal campaign form did not become ready after custom mode transition.');
+      return this.handleSwitchToCustomMode(ready.switchBtn, timeoutMs);
     }
 
     /**
@@ -655,6 +902,9 @@
      */
     findExitButtonInDialog(dialog) {
       const helpers = global.AutomationHelpers;
+      const customExit = this.findCustomModeExitAction(dialog);
+      if (customExit) return customExit;
+
       const candidates = helpers.queryShadowAll('button, [role="button"], ks-button-923', dialog);
 
       for (const cand of candidates) {
