@@ -121,6 +121,24 @@ async function test(name, fn) {
   finally { Date.now = old; }
 }
 (async () => {
+  await test('Continue exact-text fallback handles dynamic host without ID', async e => {
+    const host = e.document.body.appendChild(new Node('ks-button-changing', {}, ' Continue '));
+    const button = host.shadow().appendChild(new Node('button', { part: 'base' }));
+    await e.campaign.clickCommonNextButton('Continue (Demographics page)');
+    assert.strictEqual(button.clicks, 1);
+  });
+  await test('Targeting Continue waits for enabled inner button', async e => {
+    const host = e.document.body.appendChild(new Node('ks-button-922', { 'data-testid': 'common_next_button' }, 'Continue'));
+    const button = host.shadow().appendChild(new Node('button', { part: 'base', disabled: '' }));
+    e.later(600, () => { delete button.attrs.disabled; });
+    await e.campaign.clickCommonNextButton('Continue (Demographics page)');
+    assert.strictEqual(button.clicks, 1); assert(e.now() >= 1600);
+  });
+  await test('Ambiguous Continue text fallback does not click unrelated buttons', async e => {
+    for (let i = 0; i < 2; i++) e.document.body.appendChild(new Node('button', {}, 'Continue'));
+    await assert.rejects(e.campaign.clickCommonNextButton('Continue (Demographics page)'), /Multiple visible Continue/);
+    assert(e.document.body.children.every(node => !node.clicks));
+  });
   await test('Display contents Locations is not proof of navigation; wait for actual URL textarea', async e => {
     audience(e, { expanded: true });
     e.document.body.appendChild(new Node('div', { 'data-testid': 'creative-sidebar' }));

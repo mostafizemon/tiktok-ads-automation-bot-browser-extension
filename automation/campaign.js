@@ -4495,6 +4495,37 @@
       const h = this.helpers;
       this.diag(stepName, 'Clicking Continue button');
 
+      if (stepName === 'Continue (Demographics page)') {
+        const enabled = node => !!node && node.isConnected !== false && h.isVisible(node) &&
+          !node.disabled && node.getAttribute('aria-disabled') !== 'true' &&
+          !node.classList.contains('is-disabled') &&
+          !(node.hasAttribute('disabled') && (node.tagName?.toLowerCase() === 'button' || node.getAttribute('disabled') !== 'false'));
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline) {
+          if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+          const candidates = h.queryShadowAll('*').filter(node =>
+            node.getAttribute('data-testid') === 'common_next_button' ||
+            node.tagName?.toLowerCase().startsWith('ks-button-') || node.tagName?.toLowerCase() === 'button');
+          const ready = candidates.filter(node => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim() === 'Continue' &&
+            !node.closest?.('[role="dialog"], [role="alertdialog"]') && enabled(node))
+            .map(host => ({ host, button: h.getClickableTarget(host) })).filter(item => enabled(item.button));
+          const preferred = ready.filter(item => item.host.getAttribute('data-testid') === 'common_next_button');
+          const matches = preferred.length ? preferred : ready;
+          const unique = matches.filter((item, index) => matches.findIndex(other => other.button === item.button) === index);
+          if (unique.length > 1) throw new Error('Multiple visible Continue buttons on targeting page; refusing ambiguous click.');
+          if (unique.length === 1) {
+            const { host, button } = unique[0];
+            console.log('[LOCATION] Continue resolved by: ' + (preferred.length ? 'stable ID and exact text' : 'exact Continue text'));
+            console.log('[LOCATION] Continue host: ' + host.tagName + '; inner button enabled: true');
+            h.safeClick(button, stepName);
+            console.log('[LOCATION] Continue click dispatched once');
+            return;
+          }
+          await h.sleep(200);
+        }
+        throw new Error('Visible enabled Continue button unavailable on targeting page (ID and exact-text lookup).');
+      }
+
       const nextCandidates = h.queryShadowAll('ks-button-923[data-testid="common_next_button"]');
       let target = null;
 
