@@ -1932,11 +1932,11 @@
     findCtaSelectInSection(section) {
       const h = this.helpers;
       if (!section) return null;
-      const direct = h.queryShadow('ks-select-923, [data-tea-std_component_name="creative_aigc_cta"]', section);
+      const direct = h.queryShadow('[data-tea-std_component_name="creative_aigc_cta"]', section);
       if (direct) {
         try { if (h.isVisible(direct)) return direct; } catch (_) {}
       }
-      const all = h.queryShadowAll('ks-select-923, [data-tea-std_component_name="creative_aigc_cta"]', section);
+      const all = h.queryShadowAll('[data-tea-std_component_name="creative_aigc_cta"]', section);
       for (const el of all) {
         try { if (h.isVisible(el)) return el; } catch (_) {}
       }
@@ -2013,733 +2013,246 @@
      * Section: #fieldRenderer-callToActionAssetList
      * Title: "Call to action text"
      * Editor: ks-select-923 with nested Shadow DOM
-     * Strategy: keep the requested CTA selected, deselect others individually.
-     * The Clear All cross button is never clicked (it can leave "No Data").
+     * Strategy: open the associated menu, verify availability, clear once,
+     * search the configured CTA, then verify exactly one selected tag.
      * Options: li.dropdown-item with ks-checkbox-923, label via named slots
      * @param {string} callToAction
      */
     async configureCallToAction(callToAction) {
       const h = this.helpers;
-      const stepName = 'CONFIGURE_CTA';
-      this.diag(stepName, `Configuring Call to Action: "${callToAction}"`);
-
-      if (!callToAction || typeof callToAction !== 'string' || !callToAction.trim()) {
+      if (typeof callToAction !== 'string' || !callToAction.trim()) {
         throw new Error('Call to Action is required but not configured.');
       }
-
-      const ctaValue = callToAction.trim();
-      console.log(`[CTA] Starting CTA configuration: ${ctaValue}`);
-      console.log(`[CTA] Requested CTA: ${ctaValue}`);
-
-      // 1. Locate the CTA section container with fallbacks (root ID may vanish after re-render).
-      const rootById = document.querySelector('#fieldRenderer-callToActionAssetList') ||
-        h.queryShadow('#fieldRenderer-callToActionAssetList');
-      console.log(`[CTA] Root ID found: ${!!(rootById && h.isVisible(rootById))}`);
-      let ctaSection = this.findCtaSection();
-      const headingPresent = !!ctaSection;
-      console.log(`[CTA] CTA heading found: ${headingPresent}`);
-      if (!ctaSection) {
-        this.diag(stepName, 'Call to action section not found', {
-          elementMissing: '#fieldRenderer-callToActionAssetList, [data-lego-anchor="callToActionAssetList"], "Call to action text" heading',
-          error: 'CTA section not found on page'
-        });
-        console.log('[CTA ERROR] CTA section not found (root ID, anchor, module, heading all missed)');
-        throw new Error('Could not find Call to action text section (root ID, anchor, module wrapper, and heading fallbacks all missed).');
-      }
-
-      this.diag(stepName, 'Call to action section found', {
-        elementFound: ctaSection.id ? `#${ctaSection.id}` : (ctaSection.getAttribute?.('data-lego-anchor') || ctaSection.tagName)
-      });
-      console.log('[CTA] Call to action section found');
-
-      // 1b. SELECTED-TAG-FIRST STRATEGY. The tagged value field is the
-      // authoritative selection state. Read ALL ks-tag-923 elements inside the
-      // CTA section (hidden overflow tags included — they still represent
-      // selections). Labels come from each tag host's light-DOM textContent.
-      const tagElements = (scope) => h.queryShadowAll(
-        'ks-tag-923.value-field__tagged__tag-item, ks-tag-923[data-testid*="tag"], [data-testid*="tag-list-tag"]',
-        scope || ctaSection || document
-      );
-      const readTagLabels = (scope) => {
-        const out = [];
-        for (const tag of tagElements(scope)) {
-          try {
-            const text = this.normalizeCtaText(tag.innerText || tag.textContent);
-            // Skip the "Select" placeholder and the synthetic "+ N more"
-            // overflow indicator; never skip a real (even hidden) CTA tag.
-            if (!text || text.toLowerCase() === 'select' || /^\+\s*\d+\s*more$/i.test(text)) continue;
-            out.push(text);
-          } catch (_) {}
-        }
-        return out;
-      };
-      const selectedTags = readTagLabels(ctaSection);
-      console.log(`[CTA] Current selected tags: ${JSON.stringify(selectedTags)}`);
-      this.diag(stepName, 'Current selected tags', { selectedTags: selectedTags.join(', ') });
-
-      if (selectedTags.length === 1 && selectedTags[0] === ctaValue) {
-        // Already exactly correct: never open the dropdown, never click.
-        console.log('[CTA] Requested CTA already configured');
-        console.log('[CTA] Exactly one CTA verified');
-        console.log('[CTA] No changes required');
-        this.diag(stepName, 'CTA already configured via selected tags', {
-          selectedTags: selectedTags.join(', '),
-          verification: 'Exactly one CTA verified; no dropdown interaction performed'
-        });
-        return true;
-      }
-
-      // 2. Find and click the Edit button inside the CTA section
-      // Selector: [data-testid="lego-hybrid-section-item-operation"]
-      // Click target: host.shadowRoot.querySelector('button[part="base"]')
-      let editButtonHost = h.queryShadow('[data-testid="lego-hybrid-section-item-operation"]', ctaSection);
-      let editorOpened = false;
-
-      if (editButtonHost && editButtonHost.shadowRoot) {
-        const editButton = editButtonHost.shadowRoot.querySelector('button[part="base"]');
-        if (editButton && h.isVisible(editButton)) {
-          this.diag(stepName, 'Opening CTA editor', {
-            elementFound: '[data-testid="lego-hybrid-section-item-operation"] button[part="base"]'
-          });
-          h.safeClick(editButton, 'CTA Edit button');
-          await h.sleep(800);
-          editorOpened = true;
-        }
-      }
-
-      // If no edit button found, the editor might already be open
-      if (!editorOpened) {
-        this.diag(stepName, 'CTA editor appears to be already open; skipping Edit click');
-      }
-
-      // 3. Wait for the CTA select component to be ready within the section.
-      // Do not depend on the generated numeric tag suffix.
-      let ctaSelectHost = this.findCtaSelectInSection(ctaSection);
-      if (!ctaSelectHost) {
-        const waited = await h.waitForVisibleElement('ks-select-923, [data-tea-std_component_name="creative_aigc_cta"]', 8000, ctaSection);
-        if (waited) ctaSelectHost = waited;
-      }
-      console.log(`[CTA] CTA select found: ${!!ctaSelectHost}`);
-      if (!ctaSelectHost) {
-        this.diag(stepName, 'CTA select component not found', {
-          elementMissing: 'ks-select-923 / [data-tea-std_component_name="creative_aigc_cta"]',
-          error: 'CTA dropdown editor not available'
-        });
-        console.log('[CTA ERROR] CTA select not found after opening editor');
-        throw new Error('CTA select component not found after opening editor.');
-      }
-
-      // 4. Existing selections are already known from the selected-tag read
-      // (hidden overflow tags included; no visibility filtering).
-      console.log(`[CTA] Existing selections count: ${selectedTags.length}`);
-
-      // 5. Open the dropdown WHILE existing options are still populated.
-      // The global Clear All cross button (.value-field__clear) is intentionally
-      // NEVER clicked: clearing to zero selections can leave the dropdown in a
-      // "No Data" state with no option rows to recover from. The "Select all"
-      // row is likewise never used.
-      const isCtaChecked = (box) => !!box && (box.getAttribute?.('aria-checked') === 'true' || box.checked === true);
-      const ctaItemCheckbox = (item) => {
-        try { return item?.querySelector ? item.querySelector('ks-checkbox-923, [role="checkbox"]') : null; }
-        catch (_) { return null; }
-      };
-      const isVisibleCta = (el) => { try { return h.isVisible(el); } catch (_) { return false; } };
-      const isSelectAllRow = (text) => /^\s*select\s+all\s*$/i.test(text || '');
-      const resolveDropdownTrigger = (selectHost) => {
-        try {
-          // TikTok may render the slotted value field in the select host's
-          // light DOM. Search both composed sides, then enter the field's own
-          // shadow root for its actual clickable base.
-          const valueField = selectHost?.querySelector?.('ks-value-field-923, [part="field"]') ||
-            selectHost?.shadowRoot?.querySelector('ks-value-field-923, [part="field"]') ||
-            h.queryShadow('ks-value-field-923, [part="field"]', selectHost);
-          const inner = valueField?.shadowRoot?.querySelector('[part="base"], button[part="base"], [role="combobox"], button') ||
-            (valueField && h.queryShadow('[part="base"], button[part="base"], [role="combobox"], button', valueField));
-          if (inner) return inner;
-        } catch (_) {}
-        try {
-          const direct = selectHost?.shadowRoot?.querySelector('[part="base"], button[part="base"], button, [role="combobox"], [part="trigger"]');
-          if (direct) return direct;
-        } catch (_) {}
-        return selectHost;
-      };
-      const ctaStructuralState = (selectHost) => {
-        const shadow = !!selectHost?.shadowRoot;
-        const dropdown = selectHost?.shadowRoot?.querySelector('[part="dropdown"], ks-dropdown-menu-923') || null;
-        const popover = dropdown?.shadowRoot?.querySelector('ks-popover-923, [class*="popover"]') || null;
-        const list = popover?.querySelector('ks-dropdown-menu-list-923, [class*="dropdown-menu__body-content"] ks-dropdown-menu-list-923') || null;
-        const spinner = list?.shadowRoot?.querySelector('ks-spinner-923, [class*="spinner"]') || null;
-        const lightRows = spinner?.querySelectorAll?.('li.dropdown-item, li.menu-item-base, [role="option"]') || [];
-        const shadowRows = spinner?.shadowRoot?.querySelectorAll?.('li.dropdown-item, li.menu-item-base, [role="option"]') || [];
-        return { shadow, dropdown, popover, list, spinner, lightRows: lightRows.length, shadowRows: shadowRows.length };
-      };
-      const snapshotMenus = () => h.queryShadowAll(
-        'ks-dropdown-menu-923, ks-dropdown-menu-list-923, [role="listbox"], ul[class*="menu"], li.dropdown-item, li.menu-item-base, [role="option"]'
-      ).filter(el => isVisibleCta(el));
-      // Collect CTA option rows. The popover may render outside the section
-      // tree, so menu subtrees come first, then a document fallback restricted
-      // to rows carrying a ks-checkbox-923 (other dropdowns use other markup).
-      const collectItemsFrom = (menus) => {
+      const requested = this.normalizeCtaText(callToAction);
+      const same = text => this.normalizeCtaText(text).toLowerCase() === requested.toLowerCase();
+      const visible = node => {
+        if (!node || !h.isVisible(node)) return false;
+        // Slotted popup children can retain a layout box while an ancestor
+        // tooltip is hidden or transitioning. Inspect the composed ancestors.
         const seen = new Set();
-        const items = [];
-        const pushAll = (list) => {
-          for (const el of list || []) {
-            if (!el || seen.has(el)) continue;
-            seen.add(el);
-            items.push(el);
+        for (let current = node; current && !seen.has(current);) {
+          seen.add(current);
+          if (current.nodeType === 1 || current.tagName) {
+            const style = window.getComputedStyle(current);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' ||
+                current.hasAttribute?.('hidden')) return false;
           }
-        };
-        for (const menu of menus || []) {
-          if (menu.matches && menu.matches('li, [role="option"]')) pushAll([menu]);
-          if (typeof menu.querySelectorAll === 'function') {
-            pushAll(Array.from(menu.querySelectorAll('li.dropdown-item, li.menu-item-base, [role="option"]')));
-          }
-          if (menu.shadowRoot?.querySelectorAll) {
-            pushAll(Array.from(menu.shadowRoot.querySelectorAll('li, [role="option"]')));
-          }
-          // ks-spinner-923 projects its list through a slot: rows are light
-          // DOM children of the spinner host, not its shadow root.
-          if (menu.matches?.('ks-spinner-923') || menu.tagName?.toLowerCase().startsWith('ks-spinner-')) {
-            pushAll(Array.from(menu.querySelectorAll('li.dropdown-item, li.menu-item-base, [role="option"]')));
-          }
+          current = current.assignedSlot || current.parentElement || current.getRootNode?.().host;
         }
-        pushAll(h.queryShadowAll('li.dropdown-item, li.menu-item-base, [role="option"]'));
-        return items.filter(item => {
-          try { return !!item.querySelector?.('ks-checkbox-923'); }
-          catch (_) { return false; }
-        });
+        return true;
       };
-      const scrollCtaMenuTo = async (menus, label) => {
-        const scroller = (menus || []).map(m => m.closest?.('[class*="holder"], [class*="scroll"], [class*="list"], [role="listbox"]') || null)
-          .find(el => el && typeof el.scrollTop === 'number');
-        if (!scroller) return;
-        const deadline = Date.now() + 3000;
-        while (Date.now() < deadline) {
-          if (h.isAborted()) throw new Error('Automation aborted or paused by user');
-          // Presence in the DOM is enough: off-screen rows still exist and can
-          // be clicked after an in-menu scroll. Never filter on viewport rects.
-          const items = collectItemsFrom(menus);
-          if (items.some(item => this.resolveCtaOptionLabel(item, ctaSelectHost) === label)) return;
-          scroller.scrollTop += 220;
-          await h.sleep(250);
-        }
+      const enabled = node => !!node && !node.disabled &&
+        node.getAttribute('aria-disabled') !== 'true' &&
+        !(node.hasAttribute('disabled') && node.getAttribute('disabled') !== 'false');
+      const guard = () => { if (h.isAborted()) throw new Error('Automation aborted or paused by user'); };
+      // Include the starting host's own shadow root as well as its light children.
+      const deep = (root, selector = '*') => root ? [...new Set([
+        ...h.queryShadowAll(selector, root),
+        ...(root.shadowRoot ? h.queryShadowAll(selector, root.shadowRoot) : [])
+      ])] : [];
+      const prefix = (root, name) => deep(root).filter(node => node.tagName?.toLowerCase().startsWith(name));
+      let section = null;
+      let select = null;
+      let arrowClicked = false;
+      let clearClicked = false;
+      const refresh = () => {
+        section = this.findCtaSection();
+        select = section && this.findCtaSelectInSection(section);
       };
-      // Sweep the whole menu top-to-bottom so hidden/overflow rows that are
-      // virtualized out of view are still observed (never the page itself).
-      const sweepCtaMenu = async (menus) => {
-        const seen = new Map();
-        const harvest = () => {
-          for (const item of collectItemsFrom(snapshotMenus())) {
-            const text = this.resolveCtaOptionLabel(item, ctaSelectHost);
-            if (!text || isSelectAllRow(text)) continue;
-            if (!seen.has(text)) seen.set(text, item);
-          }
-        };
-        harvest();
-        const scroller = (menus || []).map(m => m.closest?.('[class*="holder"], [class*="scroll"], [class*="list"], [role="listbox"]') || null)
-          .find(el => el && typeof el.scrollTop === 'number');
-        if (scroller) {
-          scroller.scrollTop = 0;
-          await h.sleep(250);
-          harvest();
-          const deadline = Date.now() + 4000;
-          let stable = 0;
-          while (Date.now() < deadline && stable < 3) {
-            if (h.isAborted()) throw new Error('Automation aborted or paused by user');
-            const before = seen.size;
-            scroller.scrollTop += 240;
-            await h.sleep(250);
-            harvest();
-            stable = seen.size === before ? stable + 1 : 0;
-          }
-        }
-        return [...seen.values()];
+      const tags = () => deep(select || section).filter(node =>
+        node.tagName?.toLowerCase().startsWith('ks-tag-') &&
+        node.classList.contains('value-field__tagged__tag-item')
+      ).map(node => this.normalizeCtaText(node.textContent))
+        .filter(text => text && !/^\+\s*\d+\s*more$/i.test(text) && text.toLowerCase() !== 'select');
+      const state = () => {
+        refresh();
+        const dropdown = deep(select, '[part="dropdown"]')[0] || prefix(select, 'ks-dropdown-menu-')
+          .find(node => !node.tagName.toLowerCase().startsWith('ks-dropdown-menu-list-'));
+        const popover = prefix(dropdown, 'ks-popover-')[0];
+        // Popup/list are LIGHT DOM descendants of popover; spinner is in list shadow.
+        const popup = deep(popover || dropdown, '.dropdown-menu__popup')[0];
+        const list = prefix(popup || popover || dropdown, 'ks-dropdown-menu-list-')[0];
+        const spinner = prefix(list, 'ks-spinner-')[0];
+        const rows = deep(spinner || list || popup, 'li.dropdown-item, li.menu-item-base, [role="option"]')
+          .filter(row => deep(row, '[role="checkbox"]').length > 0);
+        const field = deep(select, '[part="field"]')
+          .find(node => node.tagName.toLowerCase().startsWith('ks-value-field-')) ||
+          prefix(select, 'ks-value-field-')[0];
+        const arrow = [...new Set([...deep(field, '.select__suffix'), ...deep(select, '.select__suffix')])]
+          .find(node => visible(node) && deep(node, '[name="chevron-up"], [name="chevron-down"]').length > 0);
+        const base = field?.shadowRoot?.querySelector('[part="base"]');
+        const trigger = arrow || (visible(base) ? base : null);
+        const clear = deep(field, '.value-field__clear[part="suffixIcon"]')
+          .find(node => visible(node) && enabled(node));
+        const surfaces = deep(popover || dropdown, '.tooltip__popup');
+        const surface = surfaces.find(visible);
+        const owner = [select, dropdown, popover].find(node => node?.hasAttribute('ks-open'));
+        const closed = owner?.getAttribute('ks-open') === 'false' ||
+          trigger?.getAttribute('aria-expanded') === 'false';
+        // Rows can stay mounted while closed. Require the rendered popup/surface.
+        const open = !closed && (surfaces.length ? !!surface : visible(popup));
+        const search = deep(popup || popover || dropdown, 'input[part="input"][placeholder="Search"]')
+          .find(node => visible(node) && enabled(node));
+        return { dropdown, popover, popup, list, spinner, rows, field, trigger, clear, open, search };
       };
-      const ensureDropdownOpen = async () => {
-        let menus = snapshotMenus();
-        if (menus.length > 0) return menus;
-        const before = new Set(menus);
-        const freshSection = this.findCtaSection();
-        const freshSelect = (freshSection && this.findCtaSelectInSection(freshSection)) || ctaSelectHost;
-        if (freshSection) ctaSection = freshSection;
-        if (freshSelect) ctaSelectHost = freshSelect;
-        const trigger = resolveDropdownTrigger(ctaSelectHost);
-        if (!trigger || !isVisibleCta(trigger)) {
-          console.log('[CTA DEBUG] Dropdown trigger found: false');
-          throw new Error('[CTA ERROR] Dropdown trigger not found');
-        }
-        console.log('[CTA DEBUG] Dropdown trigger found: true');
-        h.safeClick(trigger, 'CTA dropdown trigger');
-        console.log('[CTA DEBUG] Trigger clicked: true');
-        await h.sleep(700);
-        menus = snapshotMenus().filter(el => !before.has(el));
-        if (menus.length === 0) menus = snapshotMenus();
-        if (menus.length === 0) {
-          h.safeClick(ctaSelectHost, 'CTA dropdown host fallback');
-          await h.sleep(700);
-          menus = snapshotMenus();
-        }
-        return menus;
+      const fail = message => {
+        const s = state();
+        console.log('[CTA DEBUG] CTA section found: ' + !!section);
+        console.log('[CTA DEBUG] CTA select host found: ' + !!select);
+        console.log('[CTA DEBUG] Select shadowRoot available: ' + !!select?.shadowRoot);
+        console.log('[CTA DEBUG] Dropdown host found: ' + !!s.dropdown);
+        console.log('[CTA DEBUG] Popover host found: ' + !!s.popover);
+        console.log('[CTA DEBUG] Popup open state: ' + s.open);
+        console.log('[CTA DEBUG] Dropdown trigger found: ' + !!s.trigger);
+        console.log('[CTA DEBUG] Trigger clicked: ' + arrowClicked);
+        console.log('[CTA DEBUG] Dropdown list host found: ' + !!s.list);
+        console.log('[CTA DEBUG] Spinner host found: ' + !!s.spinner);
+        console.log('[CTA DEBUG] Spinner light DOM row count: ' +
+          (s.spinner?.querySelectorAll('li.dropdown-item').length || 0));
+        console.log('[CTA DEBUG] Spinner shadow DOM row count: ' +
+          (s.spinner?.shadowRoot?.querySelectorAll('li.dropdown-item').length || 0));
+        console.log('[CTA DEBUG] Total CTA option rows: ' + s.rows.length);
+        console.log('[CTA DEBUG] Resolved labels: ' + JSON.stringify(s.rows.map(row => this.resolveCtaOptionLabel(row, select))));
+        console.log('[CTA DEBUG] Selected CTA tags: ' + JSON.stringify(tags()));
+        console.log('[CTA DEBUG] Requested CTA: ' + requested);
+        console.log('[CTA ERROR] ' + message);
+        throw new Error('[CTA ERROR] ' + message);
       };
-      const readCheckedLabels = (items) => {
-        const checked = [];
-        for (const item of items || []) {
-          const text = this.resolveCtaOptionLabel(item, ctaSelectHost);
-          if (!text || isSelectAllRow(text)) continue;
-          if (isCtaChecked(ctaItemCheckbox(item))) checked.push(text);
+      const wait = async (check, timeout = 6000) => {
+        const until = Date.now() + timeout;
+        while (Date.now() < until) {
+          guard();
+          const result = check();
+          if (result) return result;
+          await h.sleep(200);
         }
-        return checked;
-      };
-      // Diagnostic snapshot so a failure names the actual defect: discovery,
-      // slot resolution, or interaction. Never collapses everything into
-      // "Requested CTA not available".
-      const logCtaDebug = (context) => {
-        try {
-          const items = collectItemsFrom(snapshotMenus());
-          const labels = [];
-          const unresolvedSlots = [];
-          const seen = new Set();
-          for (const item of items) {
-            const slotEl = item.querySelector?.('.menu-item-base__content--text--label slot[name], [class*="content--text--label"] slot[name], slot[name]');
-            const slotName = slotEl?.getAttribute?.('name') || null;
-            const text = this.resolveCtaOptionLabel(item, ctaSelectHost);
-            if (text && !isSelectAllRow(text)) {
-              if (!seen.has(text)) { seen.add(text); labels.push(text); }
-            } else if (slotName) {
-              unresolvedSlots.push(slotName);
-            }
-          }
-          let pathname = '';
-          try { pathname = window.location.pathname || ''; } catch (_) {}
-          console.log(`[CTA DEBUG] ${context}`);
-          console.log(`[CTA DEBUG] URL: ${pathname}`);
-          console.log(`[CTA DEBUG] CTA section found: ${!!ctaSection}`);
-          console.log(`[CTA DEBUG] CTA select found: ${!!ctaSelectHost}`);
-          const structure = ctaStructuralState(ctaSelectHost);
-          console.log(`[CTA DEBUG] Select shadowRoot available: ${structure.shadow}`);
-          console.log(`[CTA DEBUG] Dropdown host found: ${!!structure.dropdown}`);
-          console.log(`[CTA DEBUG] Popover host found: ${!!structure.popover}`);
-          console.log(`[CTA DEBUG] Dropdown list host found: ${!!structure.list}`);
-          console.log(`[CTA DEBUG] Spinner host found: ${!!structure.spinner}`);
-          console.log(`[CTA DEBUG] Spinner light DOM row count: ${structure.lightRows}`);
-          console.log(`[CTA DEBUG] Spinner shadow DOM row count: ${structure.shadowRows}`);
-          console.log(`[CTA DEBUG] Selected tags: ${JSON.stringify(readTagLabels(ctaSection))}`);
-          console.log(`[CTA DEBUG] Dropdown open: ${snapshotMenus().length > 0}`);
-          console.log(`[CTA DEBUG] Total CTA option rows: ${items.length}`);
-          console.log(`[CTA DEBUG] Menu rows found: ${items.length}`);
-          console.log(`[CTA DEBUG] Resolved labels: [${labels.join(', ')}]`);
-          console.log(`[CTA DEBUG] Unresolved slot names: [${unresolvedSlots.join(', ')}]`);
-          console.log(`[CTA DEBUG] Requested CTA: ${ctaValue}`);
-          console.log(`[CTA DEBUG] Exact match found: ${labels.includes(ctaValue)}`);
-          console.log(`[CTA DEBUG] Checked CTA labels: [${readCheckedLabels(items).join(', ')}]`);
-          this.diag(stepName, 'CTA debug snapshot', {
-            context,
-            url: pathname,
-            menuRows: items.length,
-            resolvedLabels: labels.join(', '),
-            unresolvedSlots: unresolvedSlots.join(', '),
-            selectedTags: readTagLabels(ctaSection).join(', '),
-            requested: ctaValue
-          });
-        } catch (err) {
-          try { console.log(`[CTA DEBUG] diagnostics failed: ${err.message}`); } catch (_) {}
-        }
-      };
-      // Remove one unwanted CTA tag via its own close control (the real
-      // [part="closeIcon"][aria-label="Remove tag"] inside the tag's open
-      // shadowRoot). Everything is reacquired first: TikTok rerenders the
-      // tagged field after every removal, so stale handles are never reused.
-      const findTagElement = (label, scope) => {
-        for (const tag of tagElements(scope || this.findCtaSection() || ctaSection)) {
-          try {
-            if (this.normalizeCtaText(tag.innerText || tag.textContent) === label) return tag;
-          } catch (_) {}
-        }
+        guard();
         return null;
       };
-      const removeTagByCloseControl = async (label, keepLabel) => {
-        const sectionNow = this.findCtaSection() || ctaSection;
-        const tag = findTagElement(label, sectionNow);
-        if (!tag) return 'gone';
-        let closeBtn = null;
-        try {
-          closeBtn = (tag.shadowRoot && (
-            tag.shadowRoot.querySelector('[part="closeIcon"][aria-label="Remove tag"]') ||
-            tag.shadowRoot.querySelector('[part="closeIcon"]') ||
-            tag.shadowRoot.querySelector('[aria-label="Remove tag"]')
-          )) || null;
-        } catch (_) { closeBtn = null; }
-        if (!closeBtn) return 'no-close-control';
-        h.safeClick(closeBtn, `Remove CTA tag: ${label}`);
-        await h.sleep(600);
-        const deadline = Date.now() + 5000;
-        while (Date.now() < deadline) {
-          if (h.isAborted()) throw new Error('Automation aborted or paused by user');
-          const labelsNow = readTagLabels(this.findCtaSection() || ctaSection);
-          if (!labelsNow.includes(label)) {
-            if (keepLabel && !labelsNow.includes(keepLabel)) {
-              this.diag(stepName, `Requested CTA tag lost while removing "${label}"`, {
-                error: 'Target tag disappeared during tag removal'
-              });
-              throw new Error(`[CTA ERROR] Requested CTA "${keepLabel}" tag disappeared while removing "${label}".`);
-            }
-            return 'removed';
-          }
-          await h.sleep(300);
+      // Use the resolved control itself: generic safeClick may redirect to a child.
+      const click = node => {
+        guard();
+        if (!node || !enabled(node)) fail('CTA control not interactable');
+        node.scrollIntoView({ block: 'nearest' });
+        if (!visible(node)) fail('CTA control not interactable');
+        for (const type of ['mousedown', 'mouseup']) {
+          node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
         }
-        return 'timeout';
+        node.click();
       };
-      const stripUnwantedTags = async (keepLabel) => {
-        let removed = 0;
-        const fallbackLabels = [];
-        for (let guard = 0; guard < 20; guard++) {
-          if (h.isAborted()) throw new Error('Automation aborted or paused by user');
-          const labelsNow = readTagLabels(this.findCtaSection() || ctaSection);
-          const unwanted = [...new Set(labelsNow)].filter(l => l !== keepLabel);
-          if (unwanted.length === 0) break;
-          const label = unwanted[0];
-          const result = await removeTagByCloseControl(label, keepLabel);
-          if (result === 'removed' || result === 'gone') {
-            removed++;
-            console.log(`[CTA] Removed tag: ${label}`);
-            this.diag(stepName, `Removed tag "${label}"`);
-            continue;
-          }
-          // 'no-close-control' or 'timeout': handled by the verified dropdown
-          // deselection fallback, never a blind click.
-          fallbackLabels.push(label);
-          break;
-        }
-        return { removed, fallbackLabels };
-      };
-      const rowsAreClean = () => {
-        const items = collectItemsFrom(snapshotMenus());
-        if (items.length === 0) return true; // menu closed/unmounted; tags are authoritative
-        const checkedNow = readCheckedLabels(items);
-        return checkedNow.length === 1 && checkedNow[0] === ctaValue;
-      };
-
-      // 5-7. TARGET NOT AMONG SELECTED TAGS: open the dropdown, discover
-      // options, select the target once, verify checkbox + tag — all with
-      // categorized runtime diagnostics on failure.
-      let openedMenus = null;
-      const selectTargetViaDropdown = async () => {
-        console.log('[CTA] Opening CTA dropdown');
-        this.diag(stepName, 'Opening CTA dropdown');
-        openedMenus = await ensureDropdownOpen();
-        console.log(`[CTA] CTA options loaded: ${openedMenus.length > 0}`);
-
-        // Locate the requested CTA while the menu is still populated.
-        // Nothing has been deselected yet: if the target is genuinely missing,
-        // we fail here WITHOUT having changed any existing selection.
-        if (openedMenus.length === 0) {
-          logCtaDebug('CTA dropdown did not open');
-          this.diag(stepName, 'CTA dropdown menu did not open', {
-            error: 'No visible CTA options after clicking trigger'
-          });
-          console.log('[CTA ERROR] CTA dropdown discovery failed: menu did not open');
-          throw new Error('CTA dropdown discovery failed: menu did not open after clicking the trigger.');
-        }
-        // Bounded wait for the async menu render (rows may appear after the
-        // popover mounts). Respect Pause/Stop; never wait forever.
-        {
-          const rowsDeadline = Date.now() + 5000;
-          while (Date.now() < rowsDeadline && collectItemsFrom(snapshotMenus()).length === 0) {
-            if (h.isAborted()) throw new Error('Automation aborted or paused by user');
-            await h.sleep(250);
-          }
-        }
-        // Discovery includes EVERY row present in the associated CTA dropdown,
-        // even rows scrolled out of the popup's visible viewport. Visibility is
-        // only ensured right before clicking a specific row.
-        const findCtaItem = (label) => {
-          const items = collectItemsFrom(snapshotMenus());
-          for (const item of items) {
-            const text = this.resolveCtaOptionLabel(item, ctaSelectHost);
-            if (!text || isSelectAllRow(text)) continue; // Never "Select all".
-            if (text === label) return item;
-          }
-          return null;
-        };
-        // An open menu with zero option rows in the DOM ("No Data") is
-        // recoverable: a stale search filter may be active. Clear ONLY search
-        // text, then close and reopen the dropdown exactly once. Never Select
-        // all, never Clear All, never reload the page.
-        const menuShowsNoData = (menus) => {
-          const open = (menus || []).filter(isVisibleCta);
-          if (open.length === 0) return false;
-          return collectItemsFrom(menus).length === 0;
-        };
-        const clearCtaSearchFilter = async () => {
-          let cleared = false;
-          for (const root of [ctaSection, ...(openedMenus || [])]) {
-            if (!root) continue;
-            const inputs = h.queryShadowAll('input, textarea', root);
-            for (const input of inputs) {
-              try {
-                if (!isVisibleCta(input)) continue;
-                if ((input.value || '') !== '') {
-                  try { input.focus?.(); } catch (_) {}
-                  try { input.value = ''; } catch (_) {}
-                  try { input.dispatchEvent(new Event('input', { bubbles: true, composed: true })); } catch (_) {}
-                  try { input.dispatchEvent(new Event('change', { bubbles: true, composed: true })); } catch (_) {}
-                  cleared = true;
-                }
-              } catch (_) {}
-            }
-          }
-          return cleared;
-        };
-
-        let targetItem = findCtaItem(ctaValue);
-        if (!targetItem) {
-          await scrollCtaMenuTo(openedMenus, ctaValue);
-          openedMenus = snapshotMenus();
-          targetItem = findCtaItem(ctaValue);
-        }
-        if (targetItem && !isVisibleCta(targetItem)) {
-          // Row exists (possibly off-screen in the popup): scroll it into view
-          // within the CTA dropdown before interacting.
-          await scrollCtaMenuTo(openedMenus, ctaValue);
-          openedMenus = snapshotMenus();
-          const refreshed = findCtaItem(ctaValue);
-          if (refreshed) targetItem = refreshed;
-        }
-        if (!targetItem && menuShowsNoData(openedMenus)) {
-          console.log('[CTA] Dropdown shows No Data; attempting recovery (search filter, reopen)');
-          this.diag(stepName, 'CTA dropdown shows No Data; attempting recovery');
-          await clearCtaSearchFilter();
-          await h.sleep(800);
-          try { (h.queryShadowAll('h1, h2, h3, h4').find(el => isVisibleCta(el)) || document.body).click(); } catch (_) {}
-          await h.sleep(400);
-          openedMenus = await ensureDropdownOpen();
-          await h.sleep(500);
-          await scrollCtaMenuTo(openedMenus, ctaValue);
-          targetItem = findCtaItem(ctaValue);
-        }
-        if (!targetItem) {
-          // Categorize the failure with runtime evidence — never a generic
-          // unavailable error for a DOM traversal or timing problem.
-          const debugItems = collectItemsFrom(snapshotMenus());
-          const labelSet = [];
-          const seenLabels = new Set();
-          for (const item of debugItems) {
-            const text = this.resolveCtaOptionLabel(item, ctaSelectHost);
-            if (text && !isSelectAllRow(text) && !seenLabels.has(text)) {
-              seenLabels.add(text); labelSet.push(text);
-            }
-          }
-          let categorized;
-          if (debugItems.length === 0) {
-            categorized = '[CTA ERROR] CTA dropdown discovery failed: zero menu rows (No Data state)';
-          } else if (labelSet.length === 0) {
-            categorized = `[CTA ERROR] Named-slot resolution failed: ${debugItems.length} rows but zero resolved labels`;
-          } else {
-            categorized = `[CTA ERROR] Requested CTA not available: ${ctaValue} (${labelSet.length} labels resolved; option missing from this UI)`;
-          }
-          logCtaDebug('CTA option lookup failed');
-          this.diag(stepName, 'CTA option lookup failed', {
-            error: categorized,
-            menuRows: debugItems.length,
-            resolvedLabels: labelSet.join(', '),
-            elementMissing: `dropdown item with label "${ctaValue}"`
-          });
-          console.log(categorized);
-          throw new Error(categorized);
-        }
-        console.log(`[CTA] Found requested CTA: ${ctaValue}`);
-        logCtaDebug('CTA discovery succeeded');
-
-        // Guarantee the target is selected BEFORE removing anything else, so
-        // a zero-selection intermediate state can never occur.
-        const readTargetChecked = () => {
-          const fresh = findCtaItem(ctaValue);
-          if (!fresh) return null;
-          return isCtaChecked(ctaItemCheckbox(fresh));
-        };
-        if (isCtaChecked(ctaItemCheckbox(targetItem))) {
-          console.log(`[CTA] Requested CTA already selected: ${ctaValue}`);
-          this.diag(stepName, `Requested CTA already selected: ${ctaValue}`);
-        } else {
-          console.log(`[CTA] Selecting ${ctaValue}`);
-          this.diag(stepName, `Selecting "${ctaValue}"`, {
-            elementFound: `dropdown item with label "${ctaValue}"`
-          });
-          h.safeClick(targetItem, `CTA option: ${ctaValue}`);
-          await h.sleep(700);
-          if (readTargetChecked() !== true) {
-            logCtaDebug('CTA interaction failed');
-            this.diag(stepName, `Failed to verify selection of "${ctaValue}"`, {
-              error: 'CTA interaction failed: target checkbox not set'
-            });
-            console.log(`[CTA ERROR] CTA interaction failed: checkbox for "${ctaValue}" did not become checked`);
-            throw new Error(`[CTA ERROR] CTA interaction failed: checkbox for "${ctaValue}" did not become checked.`);
-          }
-          console.log(`[CTA] Selected CTA verified: ${ctaValue}`);
-        }
-        // Bounded wait: the requested CTA tag must appear in the tagged field.
-        {
-          const tagDeadline = Date.now() + 5000;
-          let appeared = readTagLabels(this.findCtaSection() || ctaSection).includes(ctaValue);
-          while (!appeared && Date.now() < tagDeadline) {
-            if (h.isAborted()) throw new Error('Automation aborted or paused by user');
-            await h.sleep(300);
-            appeared = readTagLabels(this.findCtaSection() || ctaSection).includes(ctaValue);
-          }
-          if (!appeared) {
-            logCtaDebug('CTA state verification failed');
-            this.diag(stepName, 'CTA tag did not appear after selection', {
-              error: 'CTA state verification failed: tag missing'
-            });
-            console.log(`[CTA ERROR] CTA state verification failed: tag for "${ctaValue}" did not appear`);
-            throw new Error(`[CTA ERROR] CTA state verification failed: tag for "${ctaValue}" did not appear.`);
-          }
-          console.log(`[CTA] Requested CTA tag appeared: ${ctaValue}`);
-        }
-      };
-
-      // 8. VERIFIED FALLBACK: deselect other selected CTAs through the
-      // dropdown, reacquiring fresh handles after each change. Only used when
-      // tag close controls are unavailable or row state desyncs from tags.
-      const deselectOthersViaDropdown = async () => {
-        let count = 0;
-        const deselectDeadline = Date.now() + 90000;
-        for (let guard = 0; guard < 40; guard++) {
-          if (h.isAborted()) throw new Error('Automation aborted or paused by user');
-          if (Date.now() > deselectDeadline) {
-            throw new Error('[CTA ERROR] CTA deselection timed out.');
-          }
-          openedMenus = await ensureDropdownOpen();
-          if (openedMenus.length === 0) {
-            this.diag(stepName, 'CTA dropdown menu did not open', {
-              error: 'No visible CTA options during deselection'
-            });
-            throw new Error('CTA dropdown did not open during deselection of other CTAs.');
-          }
-          const items = await sweepCtaMenu(openedMenus);
-          const liveTarget = items.find(item => this.resolveCtaOptionLabel(item, ctaSelectHost) === ctaValue);
-          if (liveTarget && !isCtaChecked(ctaItemCheckbox(liveTarget))) {
-            this.diag(stepName, `Requested CTA "${ctaValue}" became deselected`, {
-              error: 'Target lost selection during deselection'
-            });
-            throw new Error(`[CTA ERROR] Requested CTA "${ctaValue}" lost its selection during deselection.`);
-          }
-          const unwanted = [];
-          for (const item of items) {
-            const text = this.resolveCtaOptionLabel(item, ctaSelectHost);
-            if (!text || isSelectAllRow(text) || text === ctaValue) continue;
-            if (isCtaChecked(ctaItemCheckbox(item))) unwanted.push({ item, text });
-          }
-          if (unwanted.length === 0) break;
-          let row = unwanted[0].item;
-          const rowLabel = unwanted[0].text;
-          if (!isVisibleCta(row)) {
-            await scrollCtaMenuTo(openedMenus, rowLabel);
-            const refound = collectItemsFrom(snapshotMenus())
-              .find(item => this.resolveCtaOptionLabel(item, ctaSelectHost) === rowLabel);
-            if (refound) {
-              row = refound;
-            } else {
-              try { row.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
-              await h.sleep(400);
-            }
-          }
-          h.safeClick(row, `Deselect CTA: ${rowLabel}`);
-          await h.sleep(700);
-          // Verify this option is now deselected and the target remains selected.
-          openedMenus = snapshotMenus();
-          const after = await sweepCtaMenu(openedMenus.length ? openedMenus : snapshotMenus());
-          const afterRow = after.find(item => this.resolveCtaOptionLabel(item, ctaSelectHost) === rowLabel);
-          if (afterRow && isCtaChecked(ctaItemCheckbox(afterRow))) {
-            this.diag(stepName, `Failed to deselect "${rowLabel}"`, {
-              error: 'Option still selected after click'
-            });
-            throw new Error(`[CTA ERROR] Failed to deselect "${rowLabel}".`);
-          }
-          const afterTarget = after.find(item => this.resolveCtaOptionLabel(item, ctaSelectHost) === ctaValue);
-          if (afterTarget && !isCtaChecked(ctaItemCheckbox(afterTarget))) {
-            this.diag(stepName, `Requested CTA "${ctaValue}" became deselected`, {
-              error: 'Target lost selection during deselection'
-            });
-            throw new Error(`[CTA ERROR] Requested CTA "${ctaValue}" lost its selection during deselection.`);
-          }
-          count++;
-          console.log(`[CTA] Deselected ${rowLabel}`);
-          this.diag(stepName, `Deselected "${rowLabel}"`);
-        }
-        return count;
-      };
-
-      // ORCHESTRATION: keep the target, strip every other CTA tag individually
-      // through its close control; dropdown deselection only as verified
-      // fallback. The dropdown is never opened when tags are already correct
-      // for the requested CTA (handled by the early return above).
-      let deselectedCount = 0;
-      const targetWasSelectedFromTags = selectedTags.includes(ctaValue);
-      if (!targetWasSelectedFromTags) {
-        await selectTargetViaDropdown();
-      } else {
-        console.log(`[CTA] Requested CTA already selected: ${ctaValue}`);
-        this.diag(stepName, `Requested CTA already selected via tags: ${ctaValue}`);
-      }
-      console.log('[CTA] Removing other selected CTAs');
-      this.diag(stepName, 'Removing other selected CTAs');
-      const strip = await stripUnwantedTags(ctaValue);
-      deselectedCount += strip.removed;
-      if (strip.fallbackLabels.length > 0 || !rowsAreClean()) {
-        if (strip.fallbackLabels.length > 0) {
-          console.log(`[CTA] Tag close controls unavailable for: [${strip.fallbackLabels.join(', ')}]; using dropdown deselection fallback`);
-          this.diag(stepName, 'Tag close controls unavailable; dropdown fallback', {
-            labels: strip.fallbackLabels.join(', ')
-          });
-        }
-        deselectedCount += await deselectOthersViaDropdown();
-      }
-      console.log('[CTA] Requested CTA remains selected');
-
-      // 9. Final verification after closing the dropdown: exactly one CTA
-      // selected overall (visible and hidden/overflow rows), exactly one tag,
-      // and the tag text matches config.callToAction.
-      try {
-        const heading = h.queryShadowAll('h1, h2, h3, h4')
-          .find(el => { try { return h.isVisible(el); } catch (_) { return false; } });
-        (heading || document.body).click();
-      } catch (_) { try { document.body.click(); } catch (_) {} }
-      await h.sleep(400);
-
-      const freshSection = this.findCtaSection() || ctaSection;
-      const freshSelect = (freshSection && this.findCtaSelectInSection(freshSection)) || ctaSelectHost;
-      const finalItems = await sweepCtaMenu(snapshotMenus());
-      const finalChecked = readCheckedLabels(finalItems);
-      // Selected tags: exactly one <ks-tag-923> whose light-DOM text equals the
-      // requested CTA. Hidden overflow tags count; "+ N more" indicators and
-      // the "Select" placeholder never do.
-      const tagTexts = readTagLabels(freshSection);
-      const fieldText = this.normalizeCtaText(freshSelect?.innerText || freshSelect?.textContent || freshSection?.innerText || '');
-      const displaysRequested = tagTexts.includes(ctaValue) ||
-        (fieldText.includes(ctaValue) && !fieldText.includes('+') && !fieldText.match(/,\s*\w/));
-      // When the menu is closed, option rows may unmount; rely on the tags
-      // then. While rows are present, the checked-row state is authoritative.
-      const rowsObserved = finalItems.length > 0;
-      if ((rowsObserved && (finalChecked.length !== 1 || finalChecked[0] !== ctaValue)) ||
-          !displaysRequested || !(tagTexts.length === 1 && tagTexts[0] === ctaValue)) {
-        logCtaDebug('CTA final verification failed');
-        this.diag(stepName, 'CTA final verification failed', {
-          error: `Checked: [${finalChecked.join(', ')}]; tags: [${tagTexts.join(', ') || fieldText.slice(0, 120)}]; expected exactly ["${ctaValue}"]`
+      const open = async () => {
+        const ready = await wait(() => {
+          const s = state();
+          return s.open || (visible(s.trigger) && enabled(s.trigger)) ? s : null;
         });
-        console.log(`[CTA ERROR] CTA state verification failed: expected exactly one "${ctaValue}"`);
-        throw new Error(`[CTA ERROR] CTA state verification failed: expected exactly one "${ctaValue}".`);
+        if (!ready) fail('Dropdown arrow not found');
+        if (ready.open) return;
+        console.log('[CTA] Dropdown arrow located');
+        click(ready.trigger);
+        arrowClicked = true;
+        if (!await wait(() => state().open)) fail('Dropdown did not open');
+        console.log('[CTA] Dropdown opened');
+      };
+      const fillSearch = (input, value) => {
+        guard();
+        click(input);
+        h.setNativeInputValue(input, value);
+      };
+      const target = () => {
+        const s = state();
+        return s.open && s.rows.find(row => same(this.resolveCtaOptionLabel(row, select)));
+      };
+      if (!await wait(() => { refresh(); return section; })) fail('CTA section not found');
+      console.log('[CTA] Initial selected tags: ' + JSON.stringify(tags()));
+      if (tags().length === 1 && same(tags()[0])) {
+        console.log('[CTA] Final selected tags: ' + JSON.stringify(tags()));
+        console.log('[CTA] Configuration completed');
+        return true;
       }
-      console.log(`[CTA] Exactly one selected CTA verified: ${ctaValue}`);
-      if (targetWasSelectedFromTags && deselectedCount === 0) {
-        console.log('[CTA] No changes required');
+      // Expand only if the associated select is not already editable.
+      if (!select) {
+        const editHost = deep(section, '[data-testid="lego-hybrid-section-item-operation"]')[0];
+        const edit = editHost?.shadowRoot?.querySelector('button[part="base"]') ||
+          deep(editHost, 'button[part="base"]')[0];
+        if (!visible(edit) || !enabled(edit)) fail('CTA Edit control not found');
+        click(edit);
+        console.log('[CTA] Edit section opened');
+        if (!await wait(() => { refresh(); return select; })) fail('CTA select field not ready');
       }
-
-      console.log('[CTA] CTA configuration completed');
+      await open();
+      // Clear stale search before availability verification, never another page input.
+      let s = state();
+      if (s.search?.value) fillSearch(s.search, '');
+      if (!await wait(target)) {
+        s = state();
+        if (!s.rows.length || s.rows.some(row => !this.resolveCtaOptionLabel(row, select))) fail('Options not ready');
+        fail('Requested CTA not found in loaded results');
+      }
+      console.log('[CTA] Options ready before clear');
+      refresh();
+      if (tags().length === 1 && same(tags()[0])) {
+        console.log('[CTA] Final selected tags: ' + JSON.stringify(tags()));
+        console.log('[CTA] Configuration completed');
+        return true;
+      }
+      if (tags().length) {
+        s = state();
+        if (!s.clear) fail('Clear All control not found');
+        click(s.clear);
+        clearClicked = true;
+        console.log('[CTA] Clear All clicked');
+        if (!await wait(() => { refresh(); return tags().length === 0; })) fail('Clear All did not update the field');
+        console.log('[CTA] Selections cleared');
+        // Give framework state changes time to finish before deciding to reopen.
+        await h.sleep(300);
+        if (!state().open) {
+          await open();
+          console.log('[CTA] Dropdown reopened after clear');
+        }
+      }
+      s = await wait(() => { const current = state(); return current.open && current.search ? current : null; });
+      if (!s) fail('CTA search input not found');
+      console.log('[CTA] Search input found');
+      if (s.search.value) fillSearch(s.search, '');
+      // Temporary No Data after clearing: bounded wait, then one scoped close/reopen.
+      if (!await wait(() => { const current = state(); return current.open && current.rows.length; }, 2000)) {
+        if (!clearClicked) fail('Options not ready');
+        s = state();
+        if (s.open) {
+          if (!s.trigger) fail('Dropdown arrow not found');
+          click(s.trigger);
+          if (!await wait(() => !state().open, 2000)) fail('Dropdown did not recover after clear');
+        }
+        await open();
+        s = await wait(() => { const current = state(); return current.open && current.search && current.rows.length ? current : null; });
+        if (!s) fail('Dropdown did not recover after clear');
+      }
+      s = state();
+      if (!s.search) fail('CTA search input not found');
+      console.log('[CTA] Searching for: ' + requested);
+      fillSearch(s.search, requested);
+      // Wait for filtering/rerender before reacquiring the exact result.
+      await h.sleep(500);
+      const row = await wait(target);
+      if (!row) {
+        s = state();
+        fail(s.rows.length ? 'Requested CTA not found in loaded results' : 'Search results not available');
+      }
+      console.log('[CTA] Matching CTA found');
+      const checkbox = deep(row, '[role="checkbox"]')[0];
+      if (checkbox?.getAttribute('aria-checked') !== 'true') click(row);
+      // Do not click again when the checkbox or field rerenders.
+      if (!await wait(() => {
+        refresh();
+        const selected = tags();
+        const current = target();
+        const box = current && deep(current, '[role="checkbox"]')[0];
+        return selected.length === 1 && same(selected[0]) &&
+          (!current || box?.getAttribute('aria-checked') === 'true');
+      })) fail('CTA selection verification failed');
+      console.log('[CTA] CTA selected: ' + requested);
+      console.log('[CTA] Final selected tags: ' + JSON.stringify(tags()));
       console.log('[CTA] Configuration completed');
-      this.diag(stepName, 'CTA configuration completed', {
-        verification: `Exactly one CTA selected: ${ctaValue}`
-      });
       return true;
     }
 
