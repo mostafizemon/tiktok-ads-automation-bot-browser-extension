@@ -1192,7 +1192,7 @@
         .find(node => this.helpers.isVisible(node)) || null;
     }
 
-    async ensureDemographicsLocationReady(timeoutMs = 12000) {
+    async ensureDemographicsLocationReady(timeoutMs = 12000, requestedCountries = []) {
       const h = this.helpers;
       const start = Date.now();
       let clicks = 0;
@@ -1202,6 +1202,8 @@
       let rerender = false;
       let opened = false;
       let obstructed = false;
+      let rerenderCount = 0;
+      let previousDropdown = null;
       const parent = node => node?.assignedSlot || node?.parentElement || node?.getRootNode?.().host;
       const within = (node, root) => {
         for (let current = node; current; current = parent(current)) if (current === root) return true;
@@ -1240,26 +1242,61 @@
         const target = control && h.getClickableTarget(control);
         const expanded = panel?.getAttribute('data-lego-collapse-aria-expanded') ??
           header?.getAttribute('aria-expanded');
-        const field = panel && h.queryShadow('#fieldRenderer-particleLocations', panel);
-        const dropdown = field && h.queryShadow('[data-testid="lego-antd-select"]', field);
+        const fields = panel ? h.queryShadowAll('#fieldRenderer-particleLocations', panel) : [];
+        const controls = fields.flatMap(field => h.queryShadowAll('[data-testid="lego-antd-select"]', field)
+          .map(dropdown => ({ field, dropdown })));
+        const currentControl = controls.find(item => interactable(item.dropdown)) || controls[0];
+        const field = currentControl?.field || fields[0];
+        const dropdown = currentControl?.dropdown;
         let hiddenContent = false;
+        let hiddenAncestor = null;
         let transition = false;
         const content = dropdown || field || (panel && h.queryShadow('.KsCollapseTransition', panel));
         for (let node = content; node && node !== panel; node = parent(node)) {
           if (!node.tagName || node.tagName.startsWith('#')) continue;
           const style = window.getComputedStyle(node);
           const height = node.style?.height;
-          if (style.display === 'none' || style.opacity === '0' || height === '0px') hiddenContent = true;
-          if ((Number(style.opacity) > 0 && Number(style.opacity) < 1) ||
-              (style.overflow === 'hidden' && height && height !== '0px' && height !== 'auto')) transition = true;
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' ||
+              (style.display !== 'contents' && height === '0px' && style.overflow === 'hidden')) {
+            hiddenContent = true; hiddenAncestor = node.tagName;
+          }
+          // Fixed-height overflow containers are normal layout, not proof of
+          // an active collapse animation. Inspect only the collapse container.
+          if (node.classList.contains('KsCollapseTransition')) {
+            const animations = node.getAnimations?.();
+            transition = transition || (animations
+              ? animations.some(animation => animation.playState === 'running' || animation.playState === 'pending')
+              : Number(style.opacity) > 0 && Number(style.opacity) < 1);
+          }
         }
-        const ready = expanded !== 'false' && !hiddenContent && !transition && interactable(dropdown);
+        const rect = dropdown?.getBoundingClientRect();
+        let reason = expanded === 'false' ? 'Editor collapsed' : hiddenContent ? 'Hidden/clipped ancestor' :
+          transition ? 'Collapse animation active' : !dropdown ? 'Location select absent' :
+          !connected(dropdown) ? 'Location select disconnected' : !rect?.width || !rect?.height ? 'Location select has zero dimensions' :
+          !interactable(dropdown) ? 'Location select hidden or disabled' : null;
+        let hit = null;
+        if (!reason && document.elementFromPoint && rect) {
+          // Scroll an off-screen control into view before sampling its live rect.
+          if ((rect.top ?? 0) < 0 || (rect.bottom ?? 0) > (window.innerHeight || Infinity)) dropdown.scrollIntoView({ block: 'nearest' });
+          const liveRect = dropdown.getBoundingClientRect();
+          const x = (liveRect.left ?? 0) + liveRect.width / 2;
+          const y = (liveRect.top ?? 0) + liveRect.height / 2;
+          hit = document.elementFromPoint(x, y);
+          let valid = hit && within(hit, dropdown);
+          for (let node = dropdown; !valid && node; node = node.getRootNode?.().host) {
+            if (node === hit) valid = true;
+          }
+          if (!valid) reason = 'Location select covered or outside viewport';
+        }
+        const ready = !reason;
         if (expanded === 'true' || transition) opened = true;
         if ((previousPanel && panel && previousPanel !== panel) ||
-            (previousHeading && heading && previousHeading !== heading)) rerender = true;
+            (previousHeading && heading && previousHeading !== heading) ||
+            (previousDropdown && dropdown && previousDropdown !== dropdown)) { rerender = true; rerenderCount++; }
         if (panel) previousPanel = panel;
         if (heading) previousHeading = heading;
-        return { heading, panel, target, field, dropdown, ready, transition,
+        if (dropdown) previousDropdown = dropdown;
+        return { heading, panel, target, field, dropdown, ready, transition, expanded, rect, hiddenAncestor, reason, hit,
           collapsed: !transition && (expanded === 'false' || (expanded !== 'true' && hiddenContent)),
           state: ready ? 'ready' : transition ? 'transitioning' : expanded === 'false' ? 'collapsed' :
             expanded === 'true' ? 'expanded; waiting for dropdown' : hiddenContent ? 'collapsed content' : 'rendering / unknown' };
@@ -1269,7 +1306,7 @@
           state: s.state, controlFound: !!s.target, controlConnected: !!connected(s.target),
           controlVisible: !!(s.target && h.isVisible(s.target)), clicks,
           transition: s.transition, fieldPresent: !!s.field, dropdownPresent: !!s.dropdown,
-          interactable: !!interactable(s.dropdown), obstructed, rerender, elapsedMs: Date.now() - start
+          interactable: s.ready, obstructed, rerender, elapsedMs: Date.now() - start
         };
         for (const [label, value] of [
           ['Demographics state ' + phase, details.state], ['Expand control found', details.controlFound],
@@ -1280,8 +1317,17 @@
           ['Dropdown interactable', details.interactable], ['DOM rerender detected', rerender],
           ['Readiness wait elapsed', details.elapsedMs + 'ms']
         ]) console.log('[LOCATION] ' + label + ': ' + value);
+        const currentTags = s.field ? h.queryShadowAll('[data-testid="lego-tag-list-tag"]', s.field)
+          .map(tag => (tag.textContent || '').trim()) : [];
+        const failureSnapshot = { headingFound: !!s.heading, expanded: s.expanded, transition: s.transition,
+          wrapperFound: !!s.field, selectFound: !!s.dropdown, selectConnected: !!connected(s.dropdown),
+          rect: s.rect ? { left: s.rect.left, top: s.rect.top, width: s.rect.width, height: s.rect.height } : null,
+          hiddenAncestor: s.hiddenAncestor, interactable: s.ready, rejectionReason: s.reason,
+          hit: s.hit ? { tag: s.hit.tagName, role: s.hit.getAttribute?.('role') } : null,
+          rerenderCount, elapsedMs: Date.now() - start, requestedCountries, currentlySelected: currentTags };
+        console.log('[LOCATION DEBUG] ' + JSON.stringify(failureSnapshot));
         // diagnostic() persists its action/verification through the existing log service.
-        this.diag('DEMOGRAPHICS_READINESS', phase + ': ' + JSON.stringify(details), {
+        this.diag('DEMOGRAPHICS_READINESS', phase + ': ' + JSON.stringify({ ...details, ...failureSnapshot }), {
           verification: s.ready ? 'Editable Locations dropdown ready' : null, error
         });
       };
@@ -1307,12 +1353,13 @@
         await h.sleep(200);
       }
       const s = snapshot();
+      if (s.ready) { log(s, 'ready at final deadline check'); return true; }
       const error = 'Demographics Locations dropdown did not become interactable within ' + timeoutMs + 'ms (' + s.state + '; clicks=' + clicks + ').';
       log(s, 'readiness failed', error);
       throw new Error(error);
     }
 
-    async ensureCountryTargetingSectionOpen(timeoutMs = 12000) {
+    async ensureCountryTargetingSectionOpen(timeoutMs = 12000, requestedCountries = []) {
       const h = this.helpers;
       const start = Date.now();
       let clicked = false;
@@ -1325,7 +1372,7 @@
           const panel = heading.closest('[data-lego-collapse-aria-expanded]');
           const expanded = panel?.getAttribute('data-lego-collapse-aria-expanded');
           if (demo) {
-            return this.ensureDemographicsLocationReady(Math.max(0, timeoutMs - (Date.now() - start)));
+            return this.ensureDemographicsLocationReady(Math.max(0, timeoutMs - (Date.now() - start)), requestedCountries);
           }
           // A read-only Locations summary is not the editable country field.
           const location = panel && h.queryShadow('#fieldRenderer-particleLocations', panel);
@@ -1376,7 +1423,7 @@
       this.diag(stepName, `Configuring target countries: ${JSON.stringify(targetCountries)}`);
 
       // Open the account's targeting variant before using the unchanged country workflow.
-      await this.ensureCountryTargetingSectionOpen();
+      await this.ensureCountryTargetingSectionOpen(12000, targetCountries);
       const demographicsActive = h.queryShadowAll('#section_dom_id_targetingDemographics, [id*="targetingDemographics"]')
         .some(node => h.isVisible(node));
 
@@ -1386,7 +1433,7 @@
 
       // Removing a default tag can rerender the editable panel. Recheck the
       // Demographics readiness immediately before the country dropdown step.
-      if (demographicsActive) await this.ensureDemographicsLocationReady();
+      if (demographicsActive) await this.ensureDemographicsLocationReady(12000, targetCountries);
 
       // 3. Select all requested countries using Method 1 (Direct) & Method 2 (Search)
       await this.selectTargetCountriesViaDropdown(targetCountries);
@@ -1497,7 +1544,7 @@
         this.diag(stepName, 'Country search input missing', {
           error: 'Verified search input [data-testid="lego-antd-select-popover-content-input"] not found'
         });
-        throw new Error('Verified country search input [data-testid="lego-antd-select-popover-content-input"] not found.');
+        throw new Error('[LOCATION] Dropdown popup failed to open: country search input [data-testid="lego-antd-select-popover-content-input"] not found after trigger click.');
       }
 
       console.log('[COUNTRY] Location dropdown opened');

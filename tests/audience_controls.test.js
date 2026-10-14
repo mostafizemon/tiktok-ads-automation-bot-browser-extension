@@ -268,7 +268,7 @@ async function test(name, fn) {
   await test('Overlay disappears: click only when actual control is reachable', async e => {
     const s = demographics(e); const overlay = e.document.body.appendChild(new Node('div'));
     e.document.elementFromPoint = () => overlay;
-    e.later(600, () => { e.document.elementFromPoint = () => s.chevron; });
+    e.later(600, () => { e.document.elementFromPoint = () => s.dropdown || s.chevron; });
     await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(s.chevron.clicks, 1);
   });
   await test('Pause during expansion prevents country mutation and recovery', async e => {
@@ -314,6 +314,92 @@ async function test(name, fn) {
     };
     await e.campaign.ensureCountryTargetingSectionOpen();
     assert.strictEqual(s.chevron.clicks, 1); assert.ok(s.dropdown);
+  });
+  await test('Static fixed-height overflow ancestor is ready, not permanently transitioning', async e => {
+    const s = demographics(e, { expanded: true });
+    s.content.style.height = '480px'; s.content.computed.opacity = '1';
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.strictEqual(e.sleeps, 0); assert.strictEqual(s.chevron.clicks, 0);
+  });
+  await test('Static fixed-height collapse with completed browser animation is ready', async e => {
+    const s = demographics(e, { expanded: true });
+    s.content.style.height = '480px'; s.content.getAnimations = () => [];
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(e.sleeps, 0);
+  });
+  await test('Location hit-test accepts tag-list child', async e => {
+    const s = demographics(e, { expanded: true });
+    const child = s.dropdown.appendChild(new Node('ks-scrollbar-923'))
+      .appendChild(new Node('div', { 'data-testid': 'lego-tag-list' }));
+    e.document.elementFromPoint = () => child;
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(s.chevron.clicks, 0);
+  });
+  await test('Location hit-test accepts composed shadow descendants', async e => {
+    const s = demographics(e, { expanded: true });
+    const child = s.dropdown.appendChild(new Node('ks-icon', { name: 'chevron-down' })).shadow().appendChild(new Node('svg'));
+    e.document.elementFromPoint = () => child;
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(s.chevron.clicks, 0);
+  });
+  await test('Covered Location stops without toggling expanded Demographics; diagnostics include requested/current countries', async e => {
+    const s = demographics(e, { expanded: true });
+    s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    const overlay = e.document.body.appendChild(new Node('div', { role: 'dialog' }));
+    e.document.elementFromPoint = () => overlay;
+    const logs = []; e.campaign.diag = (...args) => logs.push(args.join(' '));
+    await assert.rejects(e.campaign.ensureCountryTargetingSectionOpen(1000, ['Bangladesh']), /Demographics Locations dropdown/);
+    assert.strictEqual(s.chevron.clicks, 0);
+    assert.ok(logs.some(text => text.includes('Location select covered or outside viewport') &&
+      text.includes('"requestedCountries":["Bangladesh"]') && text.includes('"currentlySelected":["United States"]')));
+  });
+  await test('Transient Location overlay disappears without another expansion click', async e => {
+    const s = demographics(e, { expanded: true }); const overlay = e.document.body.appendChild(new Node('div'));
+    e.document.elementFromPoint = () => overlay;
+    e.later(800, () => { e.document.elementFromPoint = () => s.dropdown; });
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(s.chevron.clicks, 0);
+  });
+  await test('Ready Location with popup opening failure reports the interaction stage', async e => {
+    const s = demographics(e, { expanded: true });
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    await assert.rejects(e.campaign.selectTargetCountriesViaDropdown(['Bangladesh']), /Dropdown popup failed to open/);
+    assert.strictEqual(s.dropdown.clicks, 1); assert.strictEqual(s.chevron.clicks, 0);
+  });
+  await test('Use saved audience text does not affect expanded readiness', async e => {
+    const s = demographics(e, { expanded: true });
+    s.panel.appendChild(new Node('div', {}, 'Use saved audience'));
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(e.sleeps, 0);
+  });
+  await test('Visible live select preferred over hidden stale field from rerender', async e => {
+    const s = demographics(e, { expanded: true }); s.dropdown.visible = false;
+    const live = s.content.appendChild(new Node('div', { id: 'fieldRenderer-particleLocations' }))
+      .appendChild(new Node('div', { 'data-testid': 'lego-antd-select' }));
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(live.clicks, 0); assert.strictEqual(e.sleeps, 0);
+  });
+  await test('United States is not Bangladesh: existing country search selects Bangladesh', async e => {
+    const s = demographics(e, { expanded: true });
+    s.field.getBoundingClientRect = () => ({ width: 0, height: 0 });
+    const us = s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    const close = us.shadow().appendChild(new Node('div', { part: 'closeIcon', 'aria-label': 'Remove tag' }));
+    close.onClick = () => { us.visible = false; s.dropdown.children = s.dropdown.children.filter(node => node !== us); };
+    const popover = e.document.body.appendChild(new Node('div', { class: 'popover' })); popover.visible = false;
+    const input = popover.appendChild(new Node('input', { 'data-testid': 'lego-antd-select-popover-content-input' }));
+    input.focus = () => {}; input.blur = () => {}; window.HTMLInputElement = Node;
+    const row = popover.appendChild(new Node('div', {}, 'Country ')); row.visible = false;
+    const label = row.appendChild(new Node('span', {}, 'Bangladesh'));
+    input.dispatchEvent = event => { if (event.type === 'input') row.visible = input.value === 'Bangladesh'; };
+    label.onClick = () => { s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'Bangladesh')); };
+    s.dropdown.onClick = () => { popover.visible = true; };
+    e.campaign.clickCommonNextButton = async () => {};
+    e.campaign.verifyNavigationToNextPage = async () => {};
+    await e.campaign.configureDemographicsAndCountries({ targetCountries: ['Bangladesh'] });
+    assert.strictEqual(close.clicks, 1); assert.strictEqual(s.dropdown.clicks, 1);
+    assert.strictEqual(label.clicks, 1); assert.strictEqual(s.chevron.clicks, 0);
+    assert.strictEqual(e.campaign.isCountryTagSelected('Bangladesh'), true);
+    assert.strictEqual(e.campaign.isCountryTagSelected('United States'), false);
+  });
+  await test('Dropdown ready exactly at deadline is accepted on final live check', async e => {
+    const s = demographics(e, { expanded: true, missing: true });
+    e.later(1000, s.render);
+    await e.campaign.ensureDemographicsLocationReady(1000, ['Bangladesh']);
+    assert.strictEqual(s.chevron.clicks, 0); assert.ok(s.dropdown);
   });
   console.log(`AUDIENCE CONTROLS TEST RESULTS: ${passed} PASSED, ${failed} FAILED`); if (failed) process.exitCode = 1;
 })();
