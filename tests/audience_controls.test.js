@@ -121,6 +121,20 @@ async function test(name, fn) {
   finally { Date.now = old; }
 }
 (async () => {
+  await test('Budget Continue waits for dynamic inner button to enable then verifies navigation', async e => {
+    const host = e.document.body.appendChild(new Node('ks-button-newbuild', {}, 'Continue'));
+    const button = host.shadow().appendChild(new Node('button', { part: 'base', disabled: '' }));
+    e.later(600, () => { delete button.attrs.disabled; });
+    button.onClick = () => { audience(e, { expanded: true }); };
+    await e.campaign.clickContinueAndVerifyDemographics();
+    assert.strictEqual(button.clicks, 1); assert(e.now() >= 1600);
+  });
+  await test('Disabled budget Continue fails without dispatching click', async e => {
+    const host = e.document.body.appendChild(new Node('ks-button-923', { 'data-testid': 'common_next_button' }, 'Continue'));
+    const button = host.shadow().appendChild(new Node('button', { part: 'base', disabled: '' }));
+    await assert.rejects(e.campaign.clickContinueAndVerifyDemographics(), /enabled Continue button unavailable/);
+    assert.strictEqual(button.clicks, 0);
+  });
   await test('Default cleared but replacement absent stops before Continue', async e => {
     audience(e, { expanded: true });
     const field = e.document.querySelector('#fieldRenderer-particleLocations');

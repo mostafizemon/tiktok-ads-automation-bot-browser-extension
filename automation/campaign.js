@@ -1218,6 +1218,15 @@
       }
 
       if (!demographicsDetected) {
+        const buttons = h.queryShadowAll('*').filter(node =>
+          (node.tagName?.toLowerCase().startsWith('ks-button-') || node.tagName?.toLowerCase() === 'button') &&
+          (node.innerText || node.textContent || '').trim() === 'Continue').slice(0, 4).map(host => {
+            const inner = h.getClickableTarget(host);
+            return { tag: host.tagName, visible: h.isVisible(host),
+              innerVisible: !!inner && h.isVisible(inner), disabled: !!inner?.disabled,
+              ariaDisabled: inner?.getAttribute('aria-disabled') };
+          });
+        console.log('[BUDGET] Continue navigation timeout; live button state: ' + JSON.stringify(buttons));
         this.diag(stepName, 'Demographics page not detected after Continue', {
           error: 'Navigation to Demographics page timed out'
         });
@@ -4488,7 +4497,7 @@
       const h = this.helpers;
       this.diag(stepName, 'Clicking Continue button');
 
-      if (stepName === 'Continue (Demographics page)') {
+      if (stepName === 'Continue (Demographics page)' || stepName === 'Continue (Objective page)') {
         const enabled = node => !!node && node.isConnected !== false && h.isVisible(node) &&
           !node.disabled && node.getAttribute('aria-disabled') !== 'true' &&
           !node.classList.contains('is-disabled') &&
@@ -4505,18 +4514,19 @@
           const preferred = ready.filter(item => item.host.getAttribute('data-testid') === 'common_next_button');
           const matches = preferred.length ? preferred : ready;
           const unique = matches.filter((item, index) => matches.findIndex(other => other.button === item.button) === index);
-          if (unique.length > 1) throw new Error('Multiple visible Continue buttons on targeting page; refusing ambiguous click.');
+          if (unique.length > 1) throw new Error('Multiple visible Continue buttons at ' + stepName + '; refusing ambiguous click.');
           if (unique.length === 1) {
             const { host, button } = unique[0];
-            console.log('[LOCATION] Continue resolved by: ' + (preferred.length ? 'stable ID and exact text' : 'exact Continue text'));
-            console.log('[LOCATION] Continue host: ' + host.tagName + '; inner button enabled: true');
+            const prefix = stepName === 'Continue (Objective page)' ? '[BUDGET]' : '[LOCATION]';
+            console.log(prefix + ' Continue resolved by: ' + (preferred.length ? 'stable ID and exact text' : 'exact Continue text'));
+            console.log(prefix + ' Continue host: ' + host.tagName + '; inner button enabled: true');
             h.safeClick(button, stepName);
-            console.log('[LOCATION] Continue click dispatched once');
+            console.log(prefix + ' Continue click dispatched once');
             return;
           }
           await h.sleep(200);
         }
-        throw new Error('Visible enabled Continue button unavailable on targeting page (ID and exact-text lookup).');
+        throw new Error('Visible enabled Continue button unavailable at ' + stepName + ' (ID and exact-text lookup).');
       }
 
       const nextCandidates = h.queryShadowAll('ks-button-923[data-testid="common_next_button"]');
