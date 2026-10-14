@@ -465,6 +465,31 @@ function visibleTags(fx, label) {
     await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
     assert.strictEqual(fx.state.triggerClicks, 1);
   });
+  await test('Mounted opening tooltip with empty list settles without toggling its arrow', async env => {
+    const fx = ctaFixture(env);
+    const surface = fx.popup.parentElement.appendChild(new Node('div', { class: 'tooltip__popup', 'ks-open': '' }));
+    fx.dropdownMenu.visible = true;
+    fx.ul.children = [];
+    const computed = window.getComputedStyle;
+    let transitioning = true;
+    window.getComputedStyle = node => node === surface && transitioning
+      ? { display: 'block', visibility: 'visible', opacity: '0' } : computed(node);
+    env.later(1000, () => { transitioning = false; fx.restoreOptions(); });
+    await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
+    assert.strictEqual(fx.state.triggerClicks, 0);
+    assert.strictEqual(fx.state.clearClicks, 0);
+  });
+  await test('Stuck marked tooltip transition fails without toggling or removing tags', async env => {
+    const fx = ctaFixture(env, { preselected: ['Watch now'] });
+    const surface = fx.popup.parentElement.appendChild(new Node('div', { class: 'tooltip__popup', 'ks-open': '' }));
+    fx.dropdownMenu.visible = true;
+    const computed = window.getComputedStyle;
+    window.getComputedStyle = node => node === surface
+      ? { display: 'block', visibility: 'visible', opacity: '0' } : computed(node);
+    await assert.rejects(env.campaign.configureCallToAction('Order now'), /transition did not settle/);
+    assert.strictEqual(fx.state.triggerClicks, 0);
+    assert.deepStrictEqual(Object.keys(fx.tags), ['Watch now']);
+  });
   await test('No Data recovers with one scoped close/reopen', async env => {
     const fx = ctaFixture(env, { noDataUntilReopen: true });
     await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');

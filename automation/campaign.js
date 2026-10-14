@@ -2520,14 +2520,17 @@
         const trigger = arrow || (visible(base) ? base : null);
         const surfaces = deep(popover || dropdown, '.tooltip__popup');
         const surface = surfaces.find(visible);
-        const owner = [popover, dropdown, select].find(node => node?.hasAttribute('ks-open'));
+        // TikTok puts the open marker on the tooltip surface too. During
+        // opacity transitions it remains mounted but is not yet clickable.
+        const owner = [popover, dropdown, select, ...surfaces].find(node => node?.hasAttribute('ks-open'));
         const closed = owner?.getAttribute('ks-open') === 'false' ||
           trigger?.getAttribute('aria-expanded') === 'false';
         // Rows can stay mounted while closed. Require the rendered popup/surface.
         const open = !closed && (surfaces.length ? !!surface : visible(popup));
+        const transitioning = !closed && !open && !!owner && owner.getAttribute('ks-open') !== 'false';
         const search = deep(popup || popover || dropdown, 'input[part="input"][placeholder="Search"]')
           .find(node => visible(node) && enabled(node));
-        return { dropdown, popover, popup, list, spinner, rows, rawRows, branches: branches.length, field, trigger, open, search };
+        return { dropdown, popover, popup, list, spinner, rows, rawRows, branches: branches.length, field, trigger, open, transitioning, search };
       };
       const connected = node => {
         if (!node) return false;
@@ -2547,6 +2550,7 @@
         console.log('[CTA] Selected tags before: ' + JSON.stringify(lastSelected));
         console.log('[CTA] Selected tags after: ' + JSON.stringify(after));
         console.log('[CTA] Dropdown open: ' + s.open);
+        console.log('[CTA] Popup transition pending: ' + s.transitioning);
         console.log('[CTA] Dropdown option rows: ' + s.rows.length);
         console.log('[CTA] Raw dropdown rows: ' + s.rawRows.length + '; associated popup branches: ' + s.branches);
         console.log('[CTA] Resolved labels: ' + JSON.stringify(s.rows.map(row => this.resolveCtaOptionLabel(row, select))));
@@ -2608,9 +2612,9 @@
       const open = async () => {
         const ready = await wait(() => {
           const s = state();
-          return s.open || (visible(s.trigger) && enabled(s.trigger)) ? s : null;
+          return s.open || (!s.transitioning && visible(s.trigger) && enabled(s.trigger)) ? s : null;
         });
-        if (!ready) fail('Dropdown arrow not found');
+        if (!ready) fail(state().transitioning ? 'CTA popup transition did not settle' : 'Dropdown arrow not found');
         if (ready.open) return;
         console.log('[CTA] Dropdown arrow located');
         click(ready.trigger);
@@ -2688,7 +2692,10 @@
         if (!row && retryCount < 1) {
           retryCount++;
           logStage('Reopen associated CTA list without search');
-          const s = state();
+          // Do not toggle an opening/closing surface merely because opacity
+          // temporarily makes it look closed. Reacquire after it settles.
+          const s = await wait(() => { const live = state(); return !live.transitioning ? live : null; });
+          if (!s) fail('CTA popup transition did not settle during list recovery');
           if (s.open) {
             if (!s.trigger) fail('Dropdown arrow not found during list recovery');
             click(s.trigger);
