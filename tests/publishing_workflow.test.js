@@ -353,6 +353,23 @@ async function runTests() {
   }
 
   // --- SCENARIO 0: TEST MODE PRESERVATION ---
+  await test('Real ks-button-922 Publish all resolves its inner shadow button', async (env, mods) => {
+    const { host, innerBtn } = createPublishAllButton(env.mockDocument);
+    host.tagName = 'KS-BUTTON-922';
+    const found = await mods.CampaignAutomation.locatePublishAllButton(500);
+    assert.strictEqual(found.hostBtn, host);
+    assert.strictEqual(found.clickableBtn, innerBtn);
+    const result = await mods.CampaignAutomation.handlePublishStep({ liveMode: false });
+    assert.strictEqual(result.testMode, true);
+  });
+  await test('Dynamic custom host disabled=false is allowed but disabled inner button is rejected', async (env, mods) => {
+    const { host, innerBtn } = createPublishAllButton(env.mockDocument);
+    host.tagName = 'KS-BUTTON-DYNAMIC';
+    host.setAttribute('disabled', 'false');
+    assert(await mods.CampaignAutomation.locatePublishAllButton(500));
+    innerBtn.disabled = true;
+    assert.strictEqual(await mods.CampaignAutomation.locatePublishAllButton(500), null);
+  });
   await test('Test Mode: Never clicks Publish all, no refresh, halts with Ready to Publish', async (env, mods) => {
     const { CampaignAutomation } = mods;
     createPublishAllButton(env.mockDocument, true);

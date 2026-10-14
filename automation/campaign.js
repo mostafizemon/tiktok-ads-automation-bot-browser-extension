@@ -3786,23 +3786,23 @@
           throw new Error('Automation aborted or paused by user');
         }
 
-        const candidates = h.queryShadowAll('ks-button-923[data-testid="common_next_button"], ks-button-923, button[data-testid="common_next_button"]');
+        const candidates = h.queryShadowAll('[data-testid="common_next_button"], ks-button-923, [class*="KsButton"], button');
         for (const host of candidates) {
           const text = (host.innerText || host.textContent || '').trim();
           if (text === 'Publish all' && h.isVisible(host)) {
             const clickable = h.getClickableTarget(host);
             // Verify enabled state
-            const hostDisabled = host.hasAttribute('disabled') ||
+            const hostDisabled = (host.hasAttribute('disabled') && host.getAttribute('disabled') !== 'false') ||
                                  host.getAttribute('aria-disabled') === 'true' ||
                                  host.classList.contains('is-disabled');
             const innerDisabled = clickable && (
-              clickable.hasAttribute('disabled') ||
+              (clickable.hasAttribute('disabled') && (clickable.tagName?.toLowerCase() === 'button' || clickable.getAttribute('disabled') !== 'false')) ||
               clickable.disabled === true ||
               clickable.getAttribute('aria-disabled') === 'true' ||
               clickable.classList.contains('is-disabled')
             );
 
-            if (!hostDisabled && !innerDisabled) {
+            if (clickable && h.isVisible(clickable) && !hostDisabled && !innerDisabled) {
               return { hostBtn: host, clickableBtn: clickable };
             }
           }
@@ -3840,7 +3840,7 @@
       const found = await this.locatePublishAllButton(10000);
       if (!found) {
         this.diag(stepName, 'Locate Publish all button', {
-          elementMissing: 'ks-button-923[Publish all]',
+          elementMissing: '[data-testid="common_next_button"][Publish all]',
           error: 'Publish all button missing or disabled on final page'
         });
         throw new Error('Could not find visible and enabled "Publish all" button on the final page.');
