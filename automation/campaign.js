@@ -1760,9 +1760,6 @@
       // 3. Select all requested countries using Method 1 (Direct) & Method 2 (Search)
       await this.selectTargetCountriesViaDropdown(targetCountries);
 
-      // 4. Final verification: Check that all requested countries are selected in the tags
-      await this.verifyFinalCountryTags(targetCountries);
-
       // 5. Close the dropdown by clicking outside it
       await this.closeLocationDropdown();
       }
@@ -1788,6 +1785,8 @@
       // Close it before Continue so the first click is not consumed as dismissal.
       const locationSearch = h.queryShadow('input[data-testid="lego-antd-select-popover-content-input"]');
       if (locationSearch && h.isVisible(locationSearch)) await this.closeLocationDropdown();
+      // Never advance on an empty, stale, or partially matching Location set.
+      await this.verifyFinalCountryTags(targetCountries);
       await this.clickCommonNextButton('Continue (Demographics page)');
       console.log('[NAVIGATION] Demographics continue clicked');
 
@@ -1807,7 +1806,8 @@
       const stepName = 'CLEANUP_COUNTRY_TAGS';
       const normalizedTargets = targetCountries.map(c => c.trim().toLowerCase());
 
-      const existingTags = h.queryShadowAll('ks-tag-923[data-testid="lego-tag-list-tag"], [data-testid="lego-tag-list-tag"]');
+      const field = this.readLiveLocationField()?.field;
+      const existingTags = field ? h.queryShadowAll('[data-testid="lego-tag-list-tag"]', field) : [];
       this.diag(stepName, `Found ${existingTags.length} existing country tag(s)`);
 
       for (const tag of existingTags) {
@@ -1855,8 +1855,7 @@
       const stepName = 'SELECT_COUNTRIES_DROPDOWN';
 
       // 1. Open the Location Dropdown if not already open
-      let selectTrigger = h.queryShadow('#fieldRenderer-particleLocations [data-testid="lego-antd-select"]') ||
-                          h.queryShadow('[data-testid="lego-antd-select"]');
+      let selectTrigger = this.readLiveLocationField()?.trigger;
 
       if (!selectTrigger) {
         this.diag(stepName, 'Location dropdown trigger missing', {
@@ -2183,12 +2182,13 @@
     isCountryTagSelected(countryName) {
       const h = this.helpers;
       const targetLower = countryName.trim().toLowerCase();
-      const tags = h.queryShadowAll('ks-tag-923[data-testid="lego-tag-list-tag"], [data-testid="lego-tag-list-tag"]');
+      const field = this.readLiveLocationField()?.field;
+      const tags = field ? h.queryShadowAll('[data-testid="lego-tag-list-tag"]', field) : [];
 
       for (const tag of tags) {
         if (!h.isVisible(tag)) continue;
         const text = (tag.innerText || tag.textContent || '').trim().toLowerCase();
-        if (text === targetLower || text.startsWith(targetLower)) {
+        if (text === targetLower) {
           return true;
         }
       }
@@ -2320,20 +2320,13 @@
     async verifyFinalCountryTags(targetCountries) {
       const h = this.helpers;
       const stepName = 'VERIFY_COUNTRY_TAGS';
-      const normalizedTargets = targetCountries.map(c => c.trim().toLowerCase());
-
-      const finalTags = h.queryShadowAll('ks-tag-923[data-testid="lego-tag-list-tag"], [data-testid="lego-tag-list-tag"]');
-      const foundNames = finalTags.map(t => (t.innerText || t.textContent || '').trim().toLowerCase());
-
-      const missing = normalizedTargets.filter(c => !foundNames.some(fn => fn === c || fn.startsWith(c)));
-
-      if (missing.length > 0) {
-        this.diag(stepName, 'Verify final tags match configuration', {
-          elementMissing: `Tags for: ${missing.join(', ')}`,
-          verification: `Found tags: ${foundNames.join(', ')}`,
-          error: `Missing required country tags: ${missing.join(', ')}`
-        });
-        throw new Error(`Country selection verification failed: Missing [${missing.join(', ')}].`);
+      const state = this.readLiveLocationField();
+      const foundNames = state?.selected || [];
+      if (!this.locationSelectionMatches(state, targetCountries)) {
+        const error = 'Country selection verification failed: live Locations must exactly match requested countries. ' +
+          'Selected: ' + JSON.stringify(foundNames) + '; requested: ' + JSON.stringify(targetCountries);
+        this.diag(stepName, 'Final live Locations verification rejected', { error });
+        throw new Error(error);
       }
 
       this.diag(stepName, 'All target country tags verified', {

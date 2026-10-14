@@ -121,6 +121,33 @@ async function test(name, fn) {
   finally { Date.now = old; }
 }
 (async () => {
+  await test('Default cleared but replacement absent stops before Continue', async e => {
+    audience(e, { expanded: true });
+    const field = e.document.querySelector('#fieldRenderer-particleLocations');
+    const tag = field.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    const close = tag.shadow().appendChild(new Node('div', { part: 'closeIcon', 'aria-label': 'Remove tag' }));
+    close.onClick = () => { field.children = field.children.filter(node => node !== tag); tag.visible = false; };
+    e.campaign.selectTargetCountriesViaDropdown = async () => {};
+    let continues = 0;
+    e.campaign.clickCommonNextButton = async () => { continues++; };
+    await assert.rejects(e.campaign.configureDemographicsAndCountries({ targetCountries: ['South Korea'] }), /Country selection verification failed/);
+    assert.strictEqual(close.clicks, 1); assert.strictEqual(continues, 0);
+  });
+  await test('Unrelated country tag outside Locations cannot verify empty field', async e => {
+    audience(e, { expanded: true });
+    e.document.body.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'Bangladesh'));
+    assert.strictEqual(e.campaign.isCountryTagSelected('Bangladesh'), false);
+    await assert.rejects(e.campaign.verifyFinalCountryTags(['Bangladesh']), /verification failed/);
+  });
+  await test('Country prefix and extra country cannot pass final exact-set verification', async e => {
+    audience(e, { expanded: true });
+    const field = e.document.querySelector('#fieldRenderer-particleLocations');
+    field.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    assert.strictEqual(e.campaign.isCountryTagSelected('United'), false);
+    await assert.rejects(e.campaign.verifyFinalCountryTags(['United']), /verification failed/);
+    field.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'Canada'));
+    await assert.rejects(e.campaign.verifyFinalCountryTags(['United States']), /verification failed/);
+  });
   await test('Continue exact-text fallback handles dynamic host without ID', async e => {
     const host = e.document.body.appendChild(new Node('ks-button-changing', {}, ' Continue '));
     const button = host.shadow().appendChild(new Node('button', { part: 'base' }));
