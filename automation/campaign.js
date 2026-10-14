@@ -1241,10 +1241,16 @@
       let previousPanel = null;
       let previousHeading = null;
       let rerender = false;
-      let opened = false;
+      let openedAfterClick = false;
+      let stateBeforeClick = null;
+      let stateChangedAfterClick = false;
       let obstructed = false;
       let rerenderCount = 0;
       let previousDropdown = null;
+      let lastClickAttempted = false;
+      let lastClickDispatched = false;
+      let lastClickSkippedReason = 'N/A';
+
       const parent = node => node?.assignedSlot || node?.parentElement || node?.getRootNode?.().host;
       const within = (node, root) => {
         for (let current = node; current; current = parent(current)) if (current === root) return true;
@@ -1252,68 +1258,142 @@
       };
       const connected = node => node && (typeof node.isConnected === 'boolean'
         ? node.isConnected : within(node, document));
+
+      const isPointerEventsNone = node => {
+        if (!node) return false;
+        for (let current = node; current; current = parent(current)) {
+          if (!current.tagName || current.tagName.startsWith('#')) continue;
+          const style = window.getComputedStyle ? window.getComputedStyle(current) : current.computed;
+          if (style?.pointerEvents === 'none') return true;
+        }
+        return false;
+      };
+
+      const isControlEnabled = node => {
+        if (!node) return false;
+        if (node.disabled) return false;
+        if (node.getAttribute?.('aria-disabled') === 'true') return false;
+        if (node.hasAttribute?.('disabled') && node.getAttribute?.('disabled') !== 'false') return false;
+        if (node.classList?.contains?.('is-disabled') || node.classList?.contains?.('disabled')) return false;
+        return true;
+      };
+
       const interactable = node => {
         if (!connected(node) || !h.isVisible(node)) return false;
         for (let current = node; current; current = parent(current)) {
           if (!current.tagName || current.tagName.startsWith('#')) continue;
-          const style = window.getComputedStyle(current);
-          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' || style.pointerEvents === 'none' ||
-              current.disabled || current.getAttribute('aria-disabled') === 'true' ||
-              (current.hasAttribute('disabled') && current.getAttribute('disabled') !== 'false') ||
-              current.classList.contains('is-disabled')) return false;
+          const style = window.getComputedStyle ? window.getComputedStyle(current) : current.computed;
+          if (style?.display === 'none' || style?.visibility === 'hidden' || style?.opacity === '0' || style?.pointerEvents === 'none' ||
+              current.disabled || current.getAttribute?.('aria-disabled') === 'true' ||
+              (current.hasAttribute?.('disabled') && current.getAttribute?.('disabled') !== 'false') ||
+              current.classList?.contains?.('is-disabled')) return false;
         }
         return true;
       };
+
+      const isVisualOnly = (node, titleNode) => {
+        if (!node) return true;
+        if (isPointerEventsNone(node)) return true;
+        if (node.getAttribute?.('aria-hidden') === 'true' && !node.getAttribute?.('role')) return true;
+        if (node.getAttribute?.('data-visual-only') === 'true' || node.classList?.contains?.('visual-only')) return true;
+        if (typeof node.onClick === 'undefined' && typeof titleNode?.onClick === 'function') return true;
+        return false;
+      };
+
+      const isHitValid = (hitNode, targetNode, panelNode) => {
+        if (!hitNode || !targetNode) return false;
+        if (hitNode === targetNode) return true;
+        if (within(hitNode, targetNode)) return true;
+        if (within(targetNode, hitNode)) {
+          if (within(hitNode, panelNode || document.body)) return true;
+        }
+        if (hitNode === targetNode.getRootNode?.().host) return true;
+        return false;
+      };
+
       const snapshot = () => {
         const heading = h.queryShadowAll('#section_dom_id_targetingDemographics, [id*="targetingDemographics"]')
           .find(node => connected(node) && h.isVisible(node));
-        let panel = heading?.closest('[data-lego-collapse-aria-expanded], [data-lego-collapse]');
-        // Some builds keep the heading beside the editable content, not above it.
+        let panel = heading?.closest('[data-lego-collapse-aria-expanded], [data-lego-collapse], [class*="lego-content-slot-panel"], [class*="lego-collapse"]');
         if (!panel) {
           for (let node = heading; node && !node.matches('body, html, form'); node = parent(node)) {
             if (h.queryShadow('#fieldRenderer-particleLocations', node)) { panel = node; break; }
           }
         }
-        const titleSelector = '[data-testid="lego-content-slot-panel-title-[object Object]"]';
+
+        const titleSelector = '[data-testid="lego-content-slot-panel-title-[object Object]"], [data-testid*="lego-content-slot-panel-title"], [class*="lego-collapsible-title"]';
         const title = heading?.closest(titleSelector) ||
           (heading && h.queryShadow(titleSelector, heading)) || (panel && h.queryShadow(titleSelector, panel));
         const header = title || heading;
-        const control = header && (h.queryShadow('[data-testid="lego-get-chevron"]', header) ||
-          h.queryShadow('[name="edit"]', header) || header);
+
+        const chevronSelector = '[data-testid="lego-get-chevron"], ks-icon[name="chevron-down"], [name="chevron-down"]';
+        const chevron = header && (h.queryShadow(chevronSelector, header) || (panel && h.queryShadow(chevronSelector, panel)));
+        const edit = header && h.queryShadow('[name="edit"]', header);
+
+        let control = null;
+        let controlType = 'header';
+
+        if (chevron && !isVisualOnly(chevron, title) && interactable(chevron)) {
+          control = chevron;
+          controlType = 'chevron';
+        } else if (title && interactable(title)) {
+          control = title;
+          controlType = 'title';
+        } else if (chevron && interactable(chevron)) {
+          control = chevron;
+          controlType = 'chevron';
+        } else if (edit && interactable(edit)) {
+          control = edit;
+          controlType = 'edit';
+        } else if (header && interactable(header)) {
+          control = header;
+          controlType = 'header';
+        } else {
+          control = chevron || title || header;
+          controlType = chevron ? 'chevron' : title ? 'title' : 'header';
+        }
+
         const target = control && h.getClickableTarget(control);
-        const expanded = panel?.getAttribute('data-lego-collapse-aria-expanded') ??
-          header?.getAttribute('aria-expanded');
+        const controlEnabled = !!(target && isControlEnabled(target));
+        const controlVisible = !!(target && h.isVisible(target));
+
+        const attrExpanded = panel?.getAttribute?.('data-lego-collapse-aria-expanded') ??
+          panel?.getAttribute?.('aria-expanded') ??
+          header?.getAttribute?.('aria-expanded');
+        const hasExpandedClass = panel ? (panel.classList?.contains?.('lego-expanded') ||
+          Array.from(panel.classList || []).some(c => typeof c === 'string' && (c.includes('lego-expanded') || c.includes('expanded')))) : false;
+        const hasCollapsedClass = panel ? (panel.classList?.contains?.('lego-collapsed') ||
+          Array.from(panel.classList || []).some(c => typeof c === 'string' && (c.includes('lego-collapsed') || c.includes('collapsed')))) : false;
+
         const fields = panel ? h.queryShadowAll('#fieldRenderer-particleLocations', panel) : [];
         const controls = fields.flatMap(field => h.queryShadowAll('[data-testid="lego-antd-select"]', field)
           .map(dropdown => ({ field, dropdown })));
         const currentControl = controls.find(item => interactable(item.dropdown)) || controls[0];
         const field = currentControl?.field || fields[0];
         const dropdown = currentControl?.dropdown;
+
         let hiddenContent = false;
         let hiddenAncestor = null;
         let transition = false;
         const content = dropdown || field || (panel && h.queryShadow('.KsCollapseTransition', panel));
         for (let node = content; node && node !== panel; node = parent(node)) {
           if (!node.tagName || node.tagName.startsWith('#')) continue;
-          const style = window.getComputedStyle(node);
+          const style = window.getComputedStyle ? window.getComputedStyle(node) : node.computed;
           const height = node.style?.height;
-          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' ||
-              (style.display !== 'contents' && height === '0px' && style.overflow === 'hidden')) {
-            hiddenContent = true; hiddenAncestor = node.tagName;
+          if (style?.display === 'none' || style?.visibility === 'hidden' || style?.opacity === '0' ||
+              (style?.display !== 'contents' && height === '0px' && style?.overflow === 'hidden')) {
+            hiddenContent = true;
+            hiddenAncestor = node.tagName;
           }
-          // Fixed-height overflow containers are normal layout, not proof of
-          // an active collapse animation. Inspect only the collapse container.
-          if (node.classList.contains('KsCollapseTransition')) {
+          if (node.classList?.contains?.('KsCollapseTransition')) {
             const animations = node.getAnimations?.();
             transition = transition || (animations
               ? animations.some(animation => animation.playState === 'running' || animation.playState === 'pending')
-              : Number(style.opacity) > 0 && Number(style.opacity) < 1);
+              : Number(style?.opacity) > 0 && Number(style?.opacity) < 1);
           }
         }
+
         const rect = dropdown?.getBoundingClientRect();
-        // The expanded attribute can remain false on an outer/stale container
-        // after the editable select is rendered. Actual visibility, connection,
-        // dimensions and the hit-test are authoritative for Location readiness.
         const rendered = !hiddenContent && !transition && interactable(dropdown);
         let reason = hiddenContent ? 'Hidden/clipped ancestor' :
           transition ? 'Collapse animation active' : !dropdown ? 'Location select absent' :
@@ -1321,7 +1401,6 @@
           !interactable(dropdown) ? 'Location select hidden or disabled' : null;
         let hit = null;
         if (!reason && document.elementFromPoint && rect) {
-          // Scroll an off-screen control into view before sampling its live rect.
           if ((rect.top ?? 0) < 0 || (rect.bottom ?? 0) > (window.innerHeight || Infinity)) dropdown.scrollIntoView({ block: 'nearest' });
           const liveRect = dropdown.getBoundingClientRect();
           const x = (liveRect.left ?? 0) + liveRect.width / 2;
@@ -1334,75 +1413,202 @@
           if (!valid) reason = 'Location select covered or outside viewport';
         }
         const ready = !reason;
-        if (expanded === 'true' || transition || rendered) opened = true;
+
+        const state = ready ? 'ready' :
+          transition ? 'transitioning' :
+          rendered ? 'rendered; waiting for interaction access' :
+          attrExpanded === 'false' ? 'collapsed' :
+          attrExpanded === 'true' ? 'expanded; waiting for dropdown' :
+          hiddenContent ? 'collapsed content' :
+          hasExpandedClass ? 'expanded class; waiting for dropdown' :
+          'collapsed';
+
+        const collapsed = !transition && !rendered && (state === 'collapsed' || state === 'collapsed content');
+
+        const evidence = ready ? 'Dropdown visible and interactable in Locations field' :
+          transition ? 'Collapse transition or animation running' :
+          rendered ? (reason || 'Location dropdown rendered but hit-test or interaction pending') :
+          attrExpanded === 'false' ? `data-lego-collapse-aria-expanded="false", dropdown ${dropdown ? 'present' : 'absent'}` :
+          attrExpanded === 'true' ? 'data-lego-collapse-aria-expanded="true", awaiting dropdown' :
+          hiddenContent ? `Ancestor clipped or hidden (${hiddenAncestor})` :
+          'Dropdown absent, no active transition';
+
+        if (clicks > 0 && (attrExpanded === 'true' || transition || rendered || ready)) openedAfterClick = true;
         if ((previousPanel && panel && previousPanel !== panel) ||
             (previousHeading && heading && previousHeading !== heading) ||
             (previousDropdown && dropdown && previousDropdown !== dropdown)) { rerender = true; rerenderCount++; }
         if (panel) previousPanel = panel;
         if (heading) previousHeading = heading;
         if (dropdown) previousDropdown = dropdown;
-        return { heading, panel, target, field, dropdown, ready, transition, expanded, rect, hiddenAncestor, reason, hit,
-          attributeMismatch: expanded === 'false' && rendered,
-          collapsed: !transition && !rendered && (expanded === 'false' || (expanded !== 'true' && hiddenContent)),
-          state: ready ? 'ready' : transition ? 'transitioning' : rendered ? 'rendered; waiting for interaction access' : expanded === 'false' ? 'collapsed' :
-            expanded === 'true' ? 'expanded; waiting for dropdown' : hiddenContent ? 'collapsed content' : 'rendering / unknown' };
-      };
-      const log = (s, phase, error) => {
-        const details = {
-          state: s.state, controlFound: !!s.target, controlConnected: !!connected(s.target),
-          controlVisible: !!(s.target && h.isVisible(s.target)), clicks,
-          transition: s.transition, fieldPresent: !!s.field, dropdownPresent: !!s.dropdown,
-          interactable: s.ready, obstructed, rerender, elapsedMs: Date.now() - start
+
+        return {
+          heading, panel, target, control, controlType, controlEnabled, controlVisible,
+          field, dropdown, ready, transition, expanded: attrExpanded, rect, hiddenAncestor,
+          reason, hit, evidence, collapsed, state,
+          attributeMismatch: attrExpanded === 'false' && rendered
         };
+      };
+
+      const log = (s, phase, error, extra = {}) => {
+        const details = {
+          state: s.state,
+          evidence: s.evidence,
+          controlType: s.controlType,
+          controlFound: !!s.target,
+          controlConnected: !!connected(s.target),
+          controlEnabled: s.controlEnabled,
+          controlVisible: s.controlVisible,
+          controlObstructed: obstructed,
+          clickSkippedReason: extra.clickSkippedReason ?? lastClickSkippedReason,
+          clickAttempted: extra.clickAttempted ?? (clicks > 0),
+          clickDispatched: extra.clickDispatched ?? (clicks > 0),
+          stateChangedAfterClick: extra.stateChangedAfterClick ?? stateChangedAfterClick,
+          locationFieldAppeared: !!s.field,
+          locationDropdownReady: s.ready,
+          clicks,
+          transition: s.transition,
+          fieldPresent: !!s.field,
+          dropdownPresent: !!s.dropdown,
+          interactable: s.ready,
+          obstructed,
+          rerender,
+          elapsedMs: Date.now() - start
+        };
+
         for (const [label, value] of [
-          ['Demographics state ' + phase, details.state], ['Expand control found', details.controlFound],
-          ['Expand control connected', details.controlConnected], ['Expand control visible', details.controlVisible],
+          ['State classification', details.state],
+          ['State evidence', details.evidence],
+          ['Expansion control type', details.controlType],
+          ['Expansion control found', details.controlFound],
+          ['Expansion control enabled', details.controlEnabled],
+          ['Expansion control visible', details.controlVisible],
+          ['Expansion control obstructed', details.controlObstructed],
+          ['Click skipped reason', details.clickSkippedReason],
+          ['Click attempted', details.clickAttempted],
+          ['Click dispatched', details.clickDispatched],
+          ['State changed after click', details.stateChangedAfterClick],
+          ['Location field appeared', details.locationFieldAppeared],
+          ['Location dropdown ready', details.locationDropdownReady],
+          ['Demographics state ' + phase, details.state],
+          ['Expand control found', details.controlFound],
+          ['Expand control connected', details.controlConnected],
+          ['Expand control visible', details.controlVisible],
           ['Expand control obstructed', obstructed],
-          ['Expansion click attempted', clicks > 0], ['Expansion transition active', details.transition],
-          ['Location field present', details.fieldPresent], ['Dropdown DOM present', details.dropdownPresent],
-          ['Dropdown interactable', details.interactable], ['DOM rerender detected', rerender],
+          ['Expansion click attempted', details.clickAttempted],
+          ['Expansion transition active', details.transition],
+          ['Location field present', details.fieldPresent],
+          ['Dropdown DOM present', details.dropdownPresent],
+          ['Dropdown interactable', details.interactable],
+          ['DOM rerender detected', rerender],
           ['Readiness wait elapsed', details.elapsedMs + 'ms']
         ]) console.log('[LOCATION] ' + label + ': ' + value);
+
         const currentTags = s.field ? h.queryShadowAll('[data-testid="lego-tag-list-tag"]', s.field)
           .map(tag => (tag.textContent || '').trim()) : [];
-        const failureSnapshot = { headingFound: !!s.heading, expanded: s.expanded, transition: s.transition,
-          wrapperFound: !!s.field, selectFound: !!s.dropdown, selectConnected: !!connected(s.dropdown),
+        const failureSnapshot = {
+          headingFound: !!s.heading,
+          expanded: s.expanded,
+          transition: s.transition,
+          wrapperFound: !!s.field,
+          selectFound: !!s.dropdown,
+          selectConnected: !!connected(s.dropdown),
           rect: s.rect ? { left: s.rect.left, top: s.rect.top, width: s.rect.width, height: s.rect.height } : null,
-          hiddenAncestor: s.hiddenAncestor, interactable: s.ready, rejectionReason: s.reason,
+          hiddenAncestor: s.hiddenAncestor,
+          interactable: s.ready,
+          rejectionReason: s.reason,
           hit: s.hit ? { tag: s.hit.tagName, role: s.hit.getAttribute?.('role') } : null,
           attributeMismatch: s.attributeMismatch,
-          rerenderCount, elapsedMs: Date.now() - start, requestedCountries, currentlySelected: currentTags };
+          controlType: s.controlType,
+          controlEnabled: s.controlEnabled,
+          clickSkippedReason: extra.clickSkippedReason ?? lastClickSkippedReason,
+          rerenderCount,
+          elapsedMs: Date.now() - start,
+          requestedCountries,
+          currentlySelected: currentTags
+        };
         console.log('[LOCATION DEBUG] ' + JSON.stringify(failureSnapshot));
-        // diagnostic() persists its action/verification through the existing log service.
         this.diag('DEMOGRAPHICS_READINESS', phase + ': ' + JSON.stringify({ ...details, ...failureSnapshot }), {
-          verification: s.ready ? 'Editable Locations dropdown ready' : null, error
+          verification: s.ready ? 'Editable Locations dropdown ready' : null,
+          error
         });
       };
+
       while (Date.now() - start < timeoutMs) {
         if (h.isAborted()) throw new Error('Automation aborted or paused by user');
         const s = snapshot();
         if (s.ready) { log(s, 'after click'); return true; }
-        // Retry once only if no open state was observed and the live panel is
-        // still definitively collapsed; never toggle a transitioning/open panel.
-        if (s.collapsed && !opened && clicks < 2 && (clicks === 0 || Date.now() - lastClick >= 2500) && interactable(s.target)) {
-          s.target.scrollIntoView({ block: 'center' });
-          const rect = s.target.getBoundingClientRect();
-          const hit = document.elementFromPoint?.(rect.left + rect.width / 2, rect.top + rect.height / 2);
-          obstructed = !!document.elementFromPoint && !(hit && (within(hit, s.target) || hit === s.target.getRootNode?.().host));
-          if (!obstructed) {
-            log(s, 'before click');
-            if (h.isAborted()) throw new Error('Automation aborted or paused by user');
-            h.safeClick(s.target, 'Demographics expand control');
-            clicks++; lastClick = Date.now();
-            log(snapshot(), 'after click');
+
+        const canFirstClick = clicks === 0 && s.collapsed && !s.transition;
+        const canRecoveryClick = clicks === 1 && s.collapsed && !s.transition && !openedAfterClick && (Date.now() - lastClick >= 2500);
+
+        if (canFirstClick || canRecoveryClick) {
+          if (interactable(s.target)) {
+            s.target.scrollIntoView?.({ block: 'center' });
+            const rect = s.target.getBoundingClientRect?.();
+            let hit = null;
+            if (document.elementFromPoint && rect) {
+              const x = (rect.left ?? 0) + (rect.width ?? 0) / 2;
+              const y = (rect.top ?? 0) + (rect.height ?? 0) / 2;
+              hit = document.elementFromPoint(x, y);
+              obstructed = !isHitValid(hit, s.target, s.panel);
+            } else {
+              obstructed = false;
+            }
+
+            if (!obstructed) {
+              lastClickAttempted = true;
+              lastClickSkippedReason = 'N/A';
+              stateBeforeClick = s.state;
+              log(s, 'before click', null, {
+                clickAttempted: true,
+                clickDispatched: false,
+                clickSkippedReason: 'N/A',
+                stateChangedAfterClick: false
+              });
+              if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+              h.safeClick(s.target, `Demographics expand control (${s.controlType})`);
+              lastClickDispatched = true;
+              clicks++;
+              lastClick = Date.now();
+              const afterSnap = snapshot();
+              if (afterSnap.state !== stateBeforeClick) stateChangedAfterClick = true;
+              log(afterSnap, 'after click', null, {
+                clickAttempted: true,
+                clickDispatched: true,
+                clickSkippedReason: 'N/A',
+                stateChangedAfterClick
+              });
+            } else {
+              lastClickSkippedReason = 'Expand control obstructed by overlay or other element';
+            }
+          } else {
+            lastClickSkippedReason = !s.controlEnabled ? 'Expand control disabled' : 'Expand control non-interactable';
+          }
+        } else {
+          if (clicks >= 2) {
+            lastClickSkippedReason = 'Maximum click attempts reached (2/2)';
+          } else if (clicks === 1 && openedAfterClick) {
+            lastClickSkippedReason = 'Panel was observed opened after first click; avoiding toggle';
+          } else if (clicks === 1 && Date.now() - lastClick < 2500) {
+            lastClickSkippedReason = `Awaiting recovery delay after first click (${Date.now() - lastClick}ms / 2500ms)`;
+          } else if (s.transition) {
+            lastClickSkippedReason = 'Expansion transition active';
+          } else if (!s.collapsed) {
+            lastClickSkippedReason = s.expanded === 'true' ? 'Panel already expanded; waiting for dropdown' : 'Panel not confirmed collapsed';
           }
         }
+
         await h.sleep(200);
       }
+
       const s = snapshot();
       if (s.ready) { log(s, 'ready at final deadline check'); return true; }
       const error = 'Demographics Locations dropdown did not become interactable within ' + timeoutMs + 'ms (' + s.state + '; clicks=' + clicks + ').';
-      log(s, 'readiness failed', error);
+      log(s, 'readiness failed', error, {
+        clickAttempted: lastClickAttempted,
+        clickDispatched: lastClickDispatched,
+        clickSkippedReason: lastClickSkippedReason
+      });
       throw new Error(error);
     }
 

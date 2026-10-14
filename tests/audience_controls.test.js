@@ -423,5 +423,111 @@ async function test(name, fn) {
     await assert.rejects(e.campaign.ensureCountryTargetingSectionOpen(1000), /Demographics Locations dropdown/);
     assert.strictEqual(s.chevron.clicks, 0);
   });
+  await test('Collapsed panel with visible control and no blocker attempts expansion click', async e => {
+    const s = demographics(e);
+    const logs = [];
+    e.campaign.diag = (...args) => logs.push(args.join(' '));
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.strictEqual(s.chevron.clicks, 1);
+    assert.ok(logs.some(line => line.includes('"clicks":1') || line.includes('"clickAttempted":true')));
+  });
+  await test('Collapsed panel with title-level click handler and visual-only chevron expands via title', async e => {
+    const s = demographics(e);
+    s.chevron.computed = { pointerEvents: 'none' };
+    s.chevron.onClick = undefined;
+    let titleClicked = false;
+    s.title.onClick = () => { titleClicked = true; s.open(); };
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.strictEqual(titleClicked, true);
+    assert.strictEqual(s.chevron.clicks, 0);
+  });
+  await test('CSS class lego-expanded with attribute false and absent dropdown is treated as collapsed and expands', async e => {
+    const s = demographics(e);
+    s.panel.attrs.class = 'lego-content-slot-panel__lhC5ws lego-expanded__VM70u9';
+    s.panel.attrs['data-lego-collapse-aria-expanded'] = 'false';
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.strictEqual(s.chevron.clicks, 1);
+    assert.ok(s.dropdown);
+  });
+  await test('Conflicting state indicators with ready dropdown returns immediately without clicks', async e => {
+    const s = demographics(e, { expanded: true });
+    s.panel.attrs.class = 'lego-content-slot-panel__lhC5ws lego-expanded__VM70u9';
+    s.panel.attrs['data-lego-collapse-aria-expanded'] = 'false';
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.strictEqual(s.chevron.clicks, 0);
+    assert.strictEqual(e.sleeps, 0);
+  });
+  await test('Disabled expand control is not clicked and records accurate click-skipped diagnostics', async e => {
+    const s = demographics(e);
+    s.chevron.attrs.disabled = 'true';
+    s.title.attrs.disabled = 'true';
+    const logs = [];
+    e.campaign.diag = (...args) => logs.push(args.join(' '));
+    await assert.rejects(e.campaign.ensureCountryTargetingSectionOpen(1000), /clicks=0/);
+    assert.strictEqual(s.chevron.clicks, 0);
+    assert.ok(logs.some(line => line.includes('Expand control disabled') || line.includes('Expand control non-interactable')));
+  });
+  await test('South Korea selection removes default United States tag and verifies South Korea', async e => {
+    const s = demographics(e, { expanded: true });
+    s.field.getBoundingClientRect = () => ({ width: 0, height: 0 });
+    const us = s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    const close = us.shadow().appendChild(new Node('div', { part: 'closeIcon', 'aria-label': 'Remove tag' }));
+    close.onClick = () => { us.visible = false; s.dropdown.children = s.dropdown.children.filter(node => node !== us); };
+
+    const popover = e.document.body.appendChild(new Node('div', { class: 'popover' })); popover.visible = false;
+    const input = popover.appendChild(new Node('input', { 'data-testid': 'lego-antd-select-popover-content-input' }));
+    input.focus = () => {}; input.blur = () => {}; window.HTMLInputElement = Node;
+    const row = popover.appendChild(new Node('div', {}, 'Country ')); row.visible = false;
+    const label = row.appendChild(new Node('span', {}, 'South Korea'));
+    input.dispatchEvent = event => { if (event.type === 'input') row.visible = input.value === 'South Korea'; };
+    label.onClick = () => { s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'South Korea')); };
+    s.dropdown.onClick = () => { popover.visible = true; };
+    e.campaign.clickCommonNextButton = async () => {};
+    e.campaign.verifyNavigationToNextPage = async () => {};
+
+    await e.campaign.configureDemographicsAndCountries({ targetCountries: ['South Korea'] });
+    assert.strictEqual(close.clicks, 1);
+    assert.strictEqual(s.dropdown.clicks, 1);
+    assert.strictEqual(label.clicks, 1);
+    assert.strictEqual(s.chevron.clicks, 0);
+    assert.strictEqual(e.campaign.isCountryTagSelected('South Korea'), true);
+    assert.strictEqual(e.campaign.isCountryTagSelected('United States'), false);
+  });
+  await test('Rerender before first click does not suppress expansion click', async e => {
+    const s = demographics(e);
+    const oldHeading = s.heading;
+    e.later(200, () => {
+      s.title.children = s.title.children.filter(c => c !== oldHeading);
+      s.heading = s.title.appendChild(new Node('span', { id: 'section_dom_id_targetingDemographics' }, 'Demographics'));
+    });
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.strictEqual(s.chevron.clicks, 1);
+    assert.ok(s.dropdown);
+  });
+  await test('Diagnostic logging outputs all required Section 10 fields', async e => {
+    const s = demographics(e);
+    const consoleLogs = [];
+    const origLog = console.log;
+    console.log = (...args) => { consoleLogs.push(args.join(' ')); origLog(...args); };
+    try {
+      await e.campaign.ensureCountryTargetingSectionOpen();
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] State classification:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] State evidence:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] Expansion control type:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] Expansion control found:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] Expansion control enabled:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] Expansion control visible:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] Expansion control obstructed:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] Click skipped reason:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] Click attempted:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] Click dispatched:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] State changed after click:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] Location field appeared:')));
+      assert.ok(consoleLogs.some(line => line.includes('[LOCATION] Location dropdown ready:')));
+    } finally {
+      console.log = origLog;
+    }
+  });
   console.log(`AUDIENCE CONTROLS TEST RESULTS: ${passed} PASSED, ${failed} FAILED`); if (failed) process.exitCode = 1;
 })();
+
