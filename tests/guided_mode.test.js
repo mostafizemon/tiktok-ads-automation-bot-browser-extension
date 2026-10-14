@@ -238,6 +238,100 @@ function guided(env, { suffix = '6xhh7t2y', delay = 0, assigned = false, close =
     const second = guided(env, { suffix: 'next-campaign' }); await env.handler.ensureCustomMode();
     assert.strictEqual(first.exit.clicks, 1); assert.strictEqual(second.exit.clicks, 1);
   });
+  for (const suffix of ['nyfkz08e', 'next-build']) {
+    await test(`Full version inner shadow button then scoped popup Exit (${suffix})`, async env => {
+      const state = guided(env, { suffix, delay: 750 });
+      state.host.text = '  Switch   to full version  ';
+      const unrelated = env.document.body.appendChild(new Node('button', {}, 'Exit'));
+      await env.handler.ensureCustomMode();
+      assert.strictEqual(state.host.clicks, 0); assert.strictEqual(state.inner.clicks, 1);
+      assert.strictEqual(state.exit.clicks, 1); assert.strictEqual(unrelated.clicks, 0);
+      await env.handler.ensureCustomMode();
+      assert.strictEqual(state.inner.clicks, 1); assert.strictEqual(state.exit.clicks, 1);
+    });
+  }
+  await test('Full version opens form directly without waiting for a popup', async env => {
+    const state = guided(env); state.host.text = 'Switch to full version';
+    state.inner.onClick = () => { state.host.visible = false; env.normal(); };
+    await env.handler.ensureCustomMode();
+    assert.strictEqual(env.sleeps, 0); assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit, null);
+  });
+  await test('Normal form has priority over leftover onboarding buttons', async env => {
+    const state = guided(env); state.host.text = 'Switch to full version'; env.normal();
+    await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 0); assert.strictEqual(env.sleeps, 0);
+  });
+  await test('Rebate Traffic metadata skips onboarding without delay', async env => {
+    const wrapper = env.document.body.appendChild(new Node('div', { 'data-tea-objective-content': 'Traffic', 'data-tea-objective-value': '1' }));
+    wrapper.appendChild(new Node('label', { role: 'radio' }, 'Traffic Rebate offer'));
+    const state = guided(env); state.host.text = 'Switch to full version';
+    await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 0); assert.strictEqual(env.sleeps, 0);
+  });
+  await test('Full version disabled host waits then clicks once when enabled', async env => {
+    const state = guided(env); state.host.text = 'Switch to full version'; state.host.attrs.disabled = 'true';
+    env.later(750, () => { state.host.attrs.disabled = 'false'; });
+    await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 1);
+  });
+  await test('Permanently disabled full version never clicks', async env => {
+    const state = guided(env); state.host.text = 'Switch to full version'; state.inner.attrs.disabled = 'disabled';
+    await assert.rejects(env.handler.ensureCustomMode(750), /Neither Guided Mode nor/);
+    assert.strictEqual(state.inner.clicks, 0);
+  });
+  await test('Full version appears asynchronously after Create', async env => {
+    let state;
+    env.later(750, () => { state = guided(env); state.host.text = 'Switch to full version'; });
+    await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 1); assert.strictEqual(state.exit.clicks, 1);
+  });
+  await test('Full version rerender replaces host before direct form appears', async env => {
+    const state = guided(env); state.host.text = 'Switch to full version';
+    state.inner.onClick = () => {
+      state.host.visible = false; state.host.text = '';
+      env.later(500, () => env.normal());
+    };
+    await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 1);
+  });
+  await test('Full version resumes pending transition without clicking replaced host again', async env => {
+    const state = guided(env); state.host.text = 'Switch to full version';
+    state.inner.onClick = () => { state.host.visible = false; state.host.text = ''; };
+    await assert.rejects(env.handler.ensureCustomMode(500), /Switch to full version did not produce/);
+    env.normal(); await env.handler.ensureCustomMode(); assert.strictEqual(state.inner.clicks, 1);
+  });
+  await test('Full version ignores pre-existing Exit dialog', async env => {
+    const old = env.document.body.appendChild(new Node('div', { role: 'dialog' }));
+    const button = old.appendChild(new Node('button')); button.appendChild(new Node('slot', { name: 'cancel-btn' }, 'Exit'));
+    const state = guided(env); state.host.text = 'Switch to full version';
+    await env.handler.ensureCustomMode(); assert.strictEqual(button.clicks, 0); assert.strictEqual(state.exit.clicks, 1);
+  });
+  await test('Full version supports legacy Stay/Exit confirmation', async env => {
+    const state = guided(env); state.host.text = 'Switch to full version'; let exit;
+    state.inner.onClick = () => {
+      const dlg = env.document.body.appendChild(new Node('div', { role: 'dialog' }, 'Stay '));
+      exit = dlg.appendChild(new Node('button', {}, 'Exit'));
+      exit.onClick = () => { dlg.visible = false; state.host.visible = false; env.normal(); };
+    };
+    await env.handler.ensureCustomMode(); assert.strictEqual(exit.clicks, 1);
+  });
+  await test('Multiple visible onboarding variants stop without blind clicks', async env => {
+    const guidedState = guided(env); const full = guided(env); full.host.text = 'Switch to full version';
+    await assert.rejects(env.handler.ensureCustomMode(), /Multiple active mode-switch actions/);
+    assert.strictEqual(guidedState.inner.clicks, 0); assert.strictEqual(full.inner.clicks, 0);
+  });
+  await test('Hidden obsolete full version host is ignored', async env => {
+    const full = guided(env); full.host.text = 'Switch to full version'; full.host.visible = false;
+    const current = guided(env); await env.handler.ensureCustomMode();
+    assert.strictEqual(full.inner.clicks, 0); assert.strictEqual(current.inner.clicks, 1);
+  });
+  await test('Full version respects Stop while popup is rendering', async env => {
+    const state = guided(env, { delay: 1000 }); state.host.text = 'Switch to full version';
+    env.later(250, () => { global.AutomationRunner.shouldAbort = true; });
+    await assert.rejects(env.handler.ensureCustomMode(), /aborted or paused/);
+    assert.strictEqual(state.inner.clicks, 1); assert.strictEqual(state.exit, null);
+  });
+  await test('Full version missing popup/form stops with a useful diagnostic', async env => {
+    const state = guided(env); state.host.text = 'Switch to full version'; state.inner.onClick = () => {};
+    await assert.rejects(env.handler.ensureCustomMode(750), /Switch to full version did not produce/);
+    assert.strictEqual(state.inner.clicks, 1);
+  });
   console.log(`GUIDED MODE TEST RESULTS: ${passed} PASSED, ${failed} FAILED`);
   if (failed) process.exitCode = 1;
 })();

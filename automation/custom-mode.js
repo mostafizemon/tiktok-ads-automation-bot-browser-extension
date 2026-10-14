@@ -1,6 +1,6 @@
 /**
  * automation/custom-mode.js
- * Optional onboarding handler for Guided Mode and the legacy Simplified/Custom Mode flow.
+ * Optional onboarding handler for Guided Mode, Full Version, and legacy Custom Mode.
  * Guided Mode uses the host's open shadow button and a scoped cancel-btn Exit slot.
  *
  * Requirements:
@@ -32,6 +32,12 @@
       const helpers = global.AutomationHelpers;
       if (!helpers) return false;
 
+      // Traffic may include a Rebate offer badge; objective metadata remains exact.
+      for (const wrapper of helpers.queryShadowAll('[data-tea-objective-content="Traffic"]')) {
+        const radio = helpers.queryShadow('label[role="radio"]', wrapper);
+        if (wrapper.getAttribute('data-tea-objective-value') === '1' && radio && helpers.isVisible(radio)) return true;
+      }
+
       // Look for Traffic objective title span or text
       const trafficSpan = helpers.queryShadow('.index_title_Nvlf1') ||
                           helpers.findButtonByExactText('Traffic') ||
@@ -60,11 +66,13 @@
       const helpers = global.AutomationHelpers;
       if (!helpers) return null;
 
-      const candidates = helpers.queryShadowAll('button, [role="button"], ks-button-923, a');
+      const candidates = this.queryOpen('*').filter(node => node.matches('button, [role="button"], a') ||
+        node.tagName?.toLowerCase().startsWith('ks-button-'));
       for (const cand of candidates) {
-        const text = (cand.innerText || cand.textContent || '').trim().toLowerCase();
-        if (text.includes('switch to custom mode') && helpers.isVisible(cand)) {
-          return helpers.getClickableTarget(cand);
+        const target = helpers.getClickableTarget(cand);
+        if (this.normalizedText(cand) === 'Switch to custom mode' &&
+            this.isEnabledAction(cand) && this.isEnabledAction(target)) {
+          return target;
         }
       }
       return null;
@@ -88,6 +96,11 @@
 
     isWithin(element, root) {
       for (let current = element; current; current = this.composedParent(current)) {
+        if (current.tagName && !current.tagName.startsWith('#')) {
+          const style = window.getComputedStyle(current);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' ||
+              current.hasAttribute?.('hidden')) return false;
+        }
         if (current === root) return true;
       }
       return false;
@@ -121,13 +134,13 @@
       throw new Error(`[GUIDED MODE] ${message}`);
     }
 
-    findGuidedModeHost() {
+    findGuidedModeHost(text = 'Exit guided mode') {
       const candidates = this.queryOpen('*').filter(host =>
         (host.tagName?.toLowerCase().startsWith('ks-button-') || host.hasAttribute?.('ks-button')) &&
-        this.normalizedText(host) === 'Exit guided mode' && this.isEnabledAction(host) &&
+        this.normalizedText(host) === text && this.isEnabledAction(host) &&
         this.isEnabledAction(host.shadowRoot?.querySelector('button[part="self"]'))
       );
-      if (candidates.length > 1) throw new Error('[GUIDED MODE] Multiple Exit guided mode buttons found; refusing ambiguous action.');
+      if (candidates.length > 1) throw new Error(`[ONBOARDING] Multiple ${text} buttons found; refusing ambiguous action.`);
       return candidates[0] || null;
     }
 
@@ -179,31 +192,56 @@
     }
 
     async exitGuidedMode(host, timeoutMs) {
+      const fullVersion = this.guidedTransition?.fullVersion ?? (this.normalizedText(host) === 'Switch to full version');
       let transition = this.guidedTransition;
       if (!transition || transition.host !== host) {
-        transition = { host, before: new Set(this.visibleDialogs()), dialog: null, exitClicked: false };
+        const button = host.shadowRoot?.querySelector('button[part="self"]');
+        this.checkAbort();
+        if (!this.isEnabledAction(host) || !this.isEnabledAction(button)) {
+          throw new Error('[ONBOARDING] Mode-switch button became unavailable before clicking.');
+        }
+        transition = { host, fullVersion, before: new Set(this.visibleDialogs()), dialog: null, exitClicked: false };
         this.guidedTransition = transition;
         this.checkAbort();
-        console.log('[GUIDED MODE] Exit guided mode button detected');
-        console.log('[GUIDED MODE] Clicking Exit guided mode');
-        host.shadowRoot.querySelector('button[part="self"]').click();
+        console.log(fullVersion ? '[ONBOARDING] Switch to full version detected' : '[GUIDED MODE] Exit guided mode button detected');
+        console.log(fullVersion ? '[ONBOARDING] Clicking Switch to full version' : '[GUIDED MODE] Clicking Exit guided mode');
+        button.click();
       }
       if (!transition.exitClicked) {
-        console.log('[GUIDED MODE] Waiting for confirmation popup');
+        console.log(fullVersion ? '[ONBOARDING] Waiting for confirmation or standard campaign form' : '[GUIDED MODE] Waiting for confirmation popup');
         const match = await this.waitForMode(() => {
           const matches = this.visibleDialogs().filter(dialog => !transition.before.has(dialog))
-            .map(dialog => ({ dialog, button: this.findGuidedExitAction(dialog) })).filter(item => item.button);
+            .map(dialog => {
+              let button = this.findGuidedExitAction(dialog);
+              const text = this.normalizedText(dialog).toLowerCase();
+              if (!button && fullVersion && text.includes('stay') && text.includes('exit')) {
+                button = this.findExitButtonInDialog(dialog);
+                if (!this.isEnabledAction(button)) button = null;
+              }
+              return { dialog, button };
+            }).filter(item => item.button);
           // Nested modal wrappers can refer to the same action; different actions are ambiguous.
           if (new Set(matches.map(item => item.button)).size > 1) {
             throw new Error('[GUIDED MODE] Multiple new exit dialogs found; refusing ambiguous action.');
           }
+          if (!matches.length && fullVersion && this.isRegularCreationInterfacePresent() &&
+              !this.visibleDialogs().some(dialog => !transition.before.has(dialog))) return { normal: true };
           return matches[0];
-        }, timeoutMs, 'Exit confirmation popup or enabled Exit action did not become ready.');
+        }, timeoutMs, fullVersion
+          ? 'Switch to full version did not produce a standard form or an enabled confirmation Exit action.'
+          : 'Exit confirmation popup or enabled Exit action did not become ready.');
+        if (match.normal) {
+          console.log('[ONBOARDING] Full version opened directly');
+          console.log('[ONBOARDING] Standard campaign form ready');
+          console.log('[ONBOARDING] Continuing to Traffic objective');
+          this.guidedTransition = null;
+          return true;
+        }
         transition.dialog = match.dialog;
-        console.log('[GUIDED MODE] Confirmation popup detected');
+        console.log(fullVersion ? '[ONBOARDING] Confirmation dialog detected' : '[GUIDED MODE] Confirmation popup detected');
         this.checkAbort();
         transition.exitClicked = true;
-        console.log('[GUIDED MODE] Clicking popup Exit');
+        console.log(fullVersion ? '[ONBOARDING] Clicking Exit' : '[GUIDED MODE] Clicking popup Exit');
         match.button.click();
       }
       await this.waitForMode(() => !global.AutomationHelpers.isVisible(transition.dialog), timeoutMs,
@@ -212,6 +250,10 @@
         'Normal campaign form did not become ready after exiting Guided Mode.');
       console.log('[GUIDED MODE] Guided Mode exited');
       console.log('[GUIDED MODE] Normal campaign form ready');
+      if (fullVersion) {
+        console.log('[ONBOARDING] Standard campaign form ready');
+        console.log('[ONBOARDING] Continuing to Traffic objective');
+      }
       this.guidedTransition = null;
       return true;
     }
@@ -236,19 +278,26 @@
       this.log('Evaluating custom mode state...');
 
       console.log('[GUIDED MODE] Checking page');
+      console.log('[ONBOARDING] Checking initial campaign UI');
       // A transition already clicked must finish without dispatching either action again.
       if (this.guidedTransition) return this.exitGuidedMode(this.guidedTransition.host, timeoutMs);
       const ready = await this.waitForMode(() => {
-        const guidedHost = this.findGuidedModeHost();
-        if (guidedHost) return { guidedHost };
         if (this.isRegularCreationInterfacePresent()) return { normal: true };
+        const fullHost = this.findGuidedModeHost('Switch to full version');
+        const guidedHost = this.findGuidedModeHost();
         const switchBtn = this.findSwitchToCustomModeButton();
+        if ([fullHost, guidedHost, switchBtn].filter(Boolean).length > 1) {
+          throw new Error('[ONBOARDING] Multiple active mode-switch actions found; refusing ambiguous action.');
+        }
+        if (fullHost || guidedHost) return { guidedHost: fullHost || guidedHost };
         return switchBtn ? { switchBtn } : null;
       }, timeoutMs, 'Neither Guided Mode nor the normal campaign form became ready.');
       if (ready.guidedHost) return this.exitGuidedMode(ready.guidedHost, timeoutMs);
       if (ready.normal) {
         console.log('[GUIDED MODE] Guided Mode not present');
         console.log('[GUIDED MODE] Normal campaign form detected');
+        console.log('[ONBOARDING] No mode switch required');
+        console.log('[ONBOARDING] Traffic objective ready');
         return true;
       }
       const switchBtn = ready.switchBtn;
