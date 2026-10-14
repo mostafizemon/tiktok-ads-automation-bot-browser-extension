@@ -1613,15 +1613,62 @@
       throw new Error(error);
     }
 
+    readLiveLocationField() {
+      const h = this.helpers;
+      const rendered = node => {
+        if (!node || node.isConnected === false || !h.isVisible(node)) return false;
+        for (let ancestor = node; ancestor; ancestor = ancestor.assignedSlot || ancestor.parentElement || ancestor.getRootNode?.().host) {
+          if (!ancestor.tagName || ancestor.tagName.startsWith('#')) continue;
+          const style = window.getComputedStyle(ancestor);
+          if (ancestor.hasAttribute?.('hidden') || style.display === 'none' || style.visibility === 'hidden' ||
+              style.opacity === '0' || (style.height === '0px' && /hidden|clip/.test(style.overflow || ''))) return false;
+        }
+        return true;
+      };
+      const fields = h.queryShadowAll('#fieldRenderer-particleLocations, [data-testid="fieldRenderer-particleLocations"]');
+      for (const field of fields) {
+        const trigger = h.queryShadow('[data-testid="lego-antd-select"]', field);
+        const tags = h.queryShadowAll('[data-testid="lego-tag-list-tag"]', field);
+        if (!rendered(trigger) && !tags.some(rendered)) continue;
+        const selected = tags.map(tag => (tag.textContent || '').replace(/\s+/g, ' ').trim());
+        const restricted = !!trigger && (trigger.disabled === true || trigger.getAttribute('aria-disabled') === 'true' ||
+          trigger.classList.contains('is-disabled') || (trigger.hasAttribute('disabled') && trigger.getAttribute('disabled') !== 'false'));
+        return { field, trigger, ready: rendered(trigger) && !restricted, restricted, selected,
+          reliable: tags.length > 0 && tags.every(tag => rendered(tag)) && selected.every(Boolean) };
+      }
+      return null;
+    }
+
+    locationSelectionMatches(state, requested) {
+      const normalize = values => [...new Set(values.map(value => value.replace(/\s+/g, ' ').trim().toLowerCase()))].sort();
+      return !!state?.reliable && JSON.stringify(normalize(state.selected)) === JSON.stringify(normalize(requested));
+    }
+
     async ensureCountryTargetingSectionOpen(timeoutMs = 12000, requestedCountries = []) {
       const h = this.helpers;
       const start = Date.now();
       let clicked = false;
+      let lastObserved = null;
       while (Date.now() - start < timeoutMs) {
         if (h.isAborted()) throw new Error('Automation aborted or paused by user');
         const demo = h.queryShadowAll('#section_dom_id_targetingDemographics, [id*="targetingDemographics"]')
           .find(node => h.isVisible(node));
         const heading = demo || this.findAudienceControlsHeading();
+        const live = this.readLiveLocationField();
+        if (live?.restricted) {
+          const reason = 'Locations field is disabled or restricted; requested countries cannot be edited.';
+          console.log('[LOCATION ERROR] Failure stage: editability; reason: ' + reason);
+          this.diag('LOCATION_READINESS', 'Locations editability rejected', { error: reason });
+          throw new Error(reason);
+        }
+        lastObserved = { heading: !!heading, layout: demo ? 'demographics' : heading ? 'audience-controls' : 'direct',
+          fieldFound: !!live, dropdownReady: !!live?.ready, selected: live?.selected || [], elapsedMs: Date.now() - start };
+        // Rendered child controls outweigh missing/stale accordion attributes.
+        if (!demo && live?.ready) {
+          console.log('[LOCATION] Layout: ' + lastObserved.layout);
+          console.log('[LOCATION] Locations field ready: true');
+          return;
+        }
         if (heading) {
           const panel = heading.closest('[data-lego-collapse-aria-expanded]');
           const expanded = panel?.getAttribute('data-lego-collapse-aria-expanded');
@@ -1633,7 +1680,7 @@
           // The supplied field wrapper uses display: contents and has no layout box.
           // Test the actual interactive dropdown instead of the wrapper's dimensions.
           const locationTrigger = location && h.queryShadow('[data-testid="lego-antd-select"]', location);
-          if (expanded === 'true' && locationTrigger && h.isVisible(locationTrigger)) {
+          if (expanded === 'true' && locationTrigger && live?.ready) {
             console.log('[TARGETING] Audience controls ready');
             return;
           }
@@ -1649,10 +1696,13 @@
         } else {
           const location = h.queryShadow('#fieldRenderer-particleLocations');
           const locationTrigger = location && h.queryShadow('[data-testid="lego-antd-select"]', location);
-          if (locationTrigger && h.isVisible(locationTrigger)) return;
+          if (locationTrigger && live?.ready) return;
         }
         await h.sleep(200);
       }
+      console.log('[LOCATION ERROR] Failure stage: targeting readiness; last observed state: ' + JSON.stringify(lastObserved));
+      this.diag('LOCATION_READINESS', 'Targeting readiness failed: ' + JSON.stringify(lastObserved), {
+        error: 'Targeting section unavailable; Locations field not ready' });
       throw new Error('Targeting section unavailable: expected Demographics or expanded Audience controls with an editable Locations field.');
     }
 
@@ -1676,8 +1726,26 @@
 
       this.diag(stepName, `Configuring target countries: ${JSON.stringify(targetCountries)}`);
 
+      if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+      let existing = this.readLiveLocationField();
+      let matches = this.locationSelectionMatches(existing, targetCountries);
+      const audienceHeading = this.findAudienceControlsHeading();
+      console.log('[LOCATION] Layout: ' + (audienceHeading ? 'audience-controls' :
+        h.queryShadow('#section_dom_id_targetingDemographics') ? 'demographics' : 'direct'));
+      console.log('[LOCATION] Audience controls visible: ' + !!audienceHeading);
+      console.log('[LOCATION] Locations field found: ' + !!existing?.field);
+      console.log('[LOCATION] Locations field connected: ' + (!!existing?.field && existing.field.isConnected !== false));
+      console.log('[LOCATION] Locations field visible: ' + !!existing);
+      console.log('[LOCATION] Selected tags: ' + JSON.stringify(existing?.selected || []));
+      console.log('[LOCATION] Requested: ' + JSON.stringify(targetCountries));
+      console.log('[LOCATION] Exact match: ' + matches);
+      if (!matches) {
+
       // Open the account's targeting variant before using the unchanged country workflow.
       await this.ensureCountryTargetingSectionOpen(12000, targetCountries);
+      existing = this.readLiveLocationField();
+      matches = this.locationSelectionMatches(existing, targetCountries);
+      if (!matches) {
       const demographicsActive = h.queryShadowAll('#section_dom_id_targetingDemographics, [id*="targetingDemographics"]')
         .some(node => h.isVisible(node));
 
@@ -1697,6 +1765,17 @@
 
       // 5. Close the dropdown by clicking outside it
       await this.closeLocationDropdown();
+      }
+      }
+      if (matches) {
+        // Re-read before continuing: a framework rerender must not produce a
+        // false success from a cached country tag or another field's tags.
+        if (!this.locationSelectionMatches(this.readLiveLocationField(), targetCountries)) {
+          throw new Error('Locations selection changed during verification.');
+        }
+        console.log('[LOCATION] Existing selection matches; no changes required');
+        console.log('[LOCATION] Verification passed');
+      }
 
       // 6. Verify no location validation errors remain
       await this.verifyNoLocationErrors();

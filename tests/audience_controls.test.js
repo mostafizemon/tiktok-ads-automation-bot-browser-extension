@@ -121,6 +121,51 @@ async function test(name, fn) {
   finally { Date.now = old; }
 }
 (async () => {
+  for (const layout of ['audience', 'direct', 'demographics']) {
+    await test(layout + ' exact live country set skips every targeting mutation', async e => {
+      if (layout === 'audience') audience(e, { expanded: true });
+      if (layout === 'demographics') demographics(e, { expanded: true });
+      let field = e.document.querySelector('#fieldRenderer-particleLocations');
+      if (!field) field = e.document.body.appendChild(new Node('div', { id: 'fieldRenderer-particleLocations' }));
+      field.getBoundingClientRect = () => ({ width: 0, height: 0 });
+      field.appendChild(new Node('ks-tag-dynamic', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+      for (const method of ['ensureCountryTargetingSectionOpen', 'cleanupUnwantedCountryTags', 'selectTargetCountriesViaDropdown', 'closeLocationDropdown']) {
+        e.campaign[method] = async () => { throw new Error('Unexpected interaction: ' + method); };
+      }
+      for (const method of ['verifyNoLocationErrors', 'clickCommonNextButton', 'verifyNavigationToNextPage']) e.campaign[method] = async () => {};
+      await e.campaign.configureDemographicsAndCountries({ targetCountries: ['United States'] });
+    });
+  }
+  await test('Visible Audience locations outweigh missing accordion attribute', async e => {
+    const state = audience(e, { expanded: true });
+    delete state.panel.attrs['data-lego-collapse-aria-expanded'];
+    await e.campaign.ensureCountryTargetingSectionOpen(500);
+    assert.strictEqual(state.heading.clicks, 0);
+  });
+  await test('Country set comparison is exact, order independent and location scoped', async e => {
+    audience(e, { expanded: true });
+    const field = e.document.querySelector('#fieldRenderer-particleLocations');
+    field.appendChild(new Node('ks-tag-922', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    field.appendChild(new Node('ks-tag-922', { 'data-testid': 'lego-tag-list-tag' }, 'South Korea'));
+    e.document.body.appendChild(new Node('ks-tag-922', { 'data-testid': 'lego-tag-list-tag' }, 'Canada'));
+    const s = e.campaign.readLiveLocationField();
+    assert(e.campaign.locationSelectionMatches(s, ['South Korea', 'United States']));
+    assert(!e.campaign.locationSelectionMatches(s, ['United States']));
+    assert(!e.campaign.locationSelectionMatches(s, ['United']));
+    assert(!e.campaign.locationSelectionMatches(s, ['Canada']));
+  });
+  await test('Hidden stale field cannot satisfy an existing-country match', async e => {
+    audience(e, { expanded: true });
+    const field = e.document.querySelector('#fieldRenderer-particleLocations');
+    field.appendChild(new Node('ks-tag-922', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    field.visible = false;
+    assert.strictEqual(e.campaign.readLiveLocationField(), null);
+  });
+  await test('Restricted location control reports restriction before mutation', async e => {
+    audience(e, { expanded: true });
+    e.document.querySelector('[data-testid="lego-antd-select"]').attrs['aria-disabled'] = 'true';
+    await assert.rejects(e.campaign.ensureCountryTargetingSectionOpen(500, ['South Korea']), /restricted/);
+  });
   await test('Audience controls is accepted after objective Continue', async e => {
     let clicks = 0; e.campaign.clickCommonNextButton = async () => { clicks++; audience(e); };
     await e.campaign.clickContinueAndVerifyDemographics(); assert.strictEqual(clicks, 1);
