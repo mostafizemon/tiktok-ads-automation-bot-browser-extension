@@ -1192,7 +1192,127 @@
         .find(node => this.helpers.isVisible(node)) || null;
     }
 
-    async ensureCountryTargetingSectionOpen(timeoutMs = 8000) {
+    async ensureDemographicsLocationReady(timeoutMs = 12000) {
+      const h = this.helpers;
+      const start = Date.now();
+      let clicks = 0;
+      let lastClick = 0;
+      let previousPanel = null;
+      let previousHeading = null;
+      let rerender = false;
+      let opened = false;
+      let obstructed = false;
+      const parent = node => node?.assignedSlot || node?.parentElement || node?.getRootNode?.().host;
+      const within = (node, root) => {
+        for (let current = node; current; current = parent(current)) if (current === root) return true;
+        return false;
+      };
+      const connected = node => node && (typeof node.isConnected === 'boolean'
+        ? node.isConnected : within(node, document));
+      const interactable = node => {
+        if (!connected(node) || !h.isVisible(node)) return false;
+        for (let current = node; current; current = parent(current)) {
+          if (!current.tagName || current.tagName.startsWith('#')) continue;
+          const style = window.getComputedStyle(current);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' || style.pointerEvents === 'none' ||
+              current.disabled || current.getAttribute('aria-disabled') === 'true' ||
+              (current.hasAttribute('disabled') && current.getAttribute('disabled') !== 'false') ||
+              current.classList.contains('is-disabled')) return false;
+        }
+        return true;
+      };
+      const snapshot = () => {
+        const heading = h.queryShadowAll('#section_dom_id_targetingDemographics, [id*="targetingDemographics"]')
+          .find(node => connected(node) && h.isVisible(node));
+        let panel = heading?.closest('[data-lego-collapse-aria-expanded], [data-lego-collapse]');
+        // Some builds keep the heading beside the editable content, not above it.
+        if (!panel) {
+          for (let node = heading; node && !node.matches('body, html, form'); node = parent(node)) {
+            if (h.queryShadow('#fieldRenderer-particleLocations', node)) { panel = node; break; }
+          }
+        }
+        const titleSelector = '[data-testid="lego-content-slot-panel-title-[object Object]"]';
+        const title = heading?.closest(titleSelector) ||
+          (heading && h.queryShadow(titleSelector, heading)) || (panel && h.queryShadow(titleSelector, panel));
+        const header = title || heading;
+        const control = header && (h.queryShadow('[data-testid="lego-get-chevron"]', header) ||
+          h.queryShadow('[name="edit"]', header) || header);
+        const target = control && h.getClickableTarget(control);
+        const expanded = panel?.getAttribute('data-lego-collapse-aria-expanded') ??
+          header?.getAttribute('aria-expanded');
+        const field = panel && h.queryShadow('#fieldRenderer-particleLocations', panel);
+        const dropdown = field && h.queryShadow('[data-testid="lego-antd-select"]', field);
+        let hiddenContent = false;
+        let transition = false;
+        const content = dropdown || field || (panel && h.queryShadow('.KsCollapseTransition', panel));
+        for (let node = content; node && node !== panel; node = parent(node)) {
+          if (!node.tagName || node.tagName.startsWith('#')) continue;
+          const style = window.getComputedStyle(node);
+          const height = node.style?.height;
+          if (style.display === 'none' || style.opacity === '0' || height === '0px') hiddenContent = true;
+          if ((Number(style.opacity) > 0 && Number(style.opacity) < 1) ||
+              (style.overflow === 'hidden' && height && height !== '0px' && height !== 'auto')) transition = true;
+        }
+        const ready = expanded !== 'false' && !hiddenContent && !transition && interactable(dropdown);
+        if (expanded === 'true' || transition) opened = true;
+        if ((previousPanel && panel && previousPanel !== panel) ||
+            (previousHeading && heading && previousHeading !== heading)) rerender = true;
+        if (panel) previousPanel = panel;
+        if (heading) previousHeading = heading;
+        return { heading, panel, target, field, dropdown, ready, transition,
+          collapsed: !transition && (expanded === 'false' || (expanded !== 'true' && hiddenContent)),
+          state: ready ? 'ready' : transition ? 'transitioning' : expanded === 'false' ? 'collapsed' :
+            expanded === 'true' ? 'expanded; waiting for dropdown' : hiddenContent ? 'collapsed content' : 'rendering / unknown' };
+      };
+      const log = (s, phase, error) => {
+        const details = {
+          state: s.state, controlFound: !!s.target, controlConnected: !!connected(s.target),
+          controlVisible: !!(s.target && h.isVisible(s.target)), clicks,
+          transition: s.transition, fieldPresent: !!s.field, dropdownPresent: !!s.dropdown,
+          interactable: !!interactable(s.dropdown), obstructed, rerender, elapsedMs: Date.now() - start
+        };
+        for (const [label, value] of [
+          ['Demographics state ' + phase, details.state], ['Expand control found', details.controlFound],
+          ['Expand control connected', details.controlConnected], ['Expand control visible', details.controlVisible],
+          ['Expand control obstructed', obstructed],
+          ['Expansion click attempted', clicks > 0], ['Expansion transition active', details.transition],
+          ['Location field present', details.fieldPresent], ['Dropdown DOM present', details.dropdownPresent],
+          ['Dropdown interactable', details.interactable], ['DOM rerender detected', rerender],
+          ['Readiness wait elapsed', details.elapsedMs + 'ms']
+        ]) console.log('[LOCATION] ' + label + ': ' + value);
+        // diagnostic() persists its action/verification through the existing log service.
+        this.diag('DEMOGRAPHICS_READINESS', phase + ': ' + JSON.stringify(details), {
+          verification: s.ready ? 'Editable Locations dropdown ready' : null, error
+        });
+      };
+      while (Date.now() - start < timeoutMs) {
+        if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+        const s = snapshot();
+        if (s.ready) { log(s, 'after click'); return true; }
+        // Retry once only if no open state was observed and the live panel is
+        // still definitively collapsed; never toggle a transitioning/open panel.
+        if (s.collapsed && !opened && clicks < 2 && (clicks === 0 || Date.now() - lastClick >= 2500) && interactable(s.target)) {
+          s.target.scrollIntoView({ block: 'center' });
+          const rect = s.target.getBoundingClientRect();
+          const hit = document.elementFromPoint?.(rect.left + rect.width / 2, rect.top + rect.height / 2);
+          obstructed = !!document.elementFromPoint && !(hit && (within(hit, s.target) || hit === s.target.getRootNode?.().host));
+          if (!obstructed) {
+            log(s, 'before click');
+            if (h.isAborted()) throw new Error('Automation aborted or paused by user');
+            h.safeClick(s.target, 'Demographics expand control');
+            clicks++; lastClick = Date.now();
+            log(snapshot(), 'after click');
+          }
+        }
+        await h.sleep(200);
+      }
+      const s = snapshot();
+      const error = 'Demographics Locations dropdown did not become interactable within ' + timeoutMs + 'ms (' + s.state + '; clicks=' + clicks + ').';
+      log(s, 'readiness failed', error);
+      throw new Error(error);
+    }
+
+    async ensureCountryTargetingSectionOpen(timeoutMs = 12000) {
       const h = this.helpers;
       const start = Date.now();
       let clicked = false;
@@ -1205,14 +1325,7 @@
           const panel = heading.closest('[data-lego-collapse-aria-expanded]');
           const expanded = panel?.getAttribute('data-lego-collapse-aria-expanded');
           if (demo) {
-            // Preserve the existing Demographics path when available.
-            if (expanded === 'false' && !clicked) {
-              await h.sleep(300);
-              if (h.isAborted()) throw new Error('Automation aborted or paused by user');
-              h.safeClick(heading, 'Demographics section header');
-              await h.sleep(600);
-            }
-            return;
+            return this.ensureDemographicsLocationReady(Math.max(0, timeoutMs - (Date.now() - start)));
           }
           // A read-only Locations summary is not the editable country field.
           const location = panel && h.queryShadow('#fieldRenderer-particleLocations', panel);
@@ -1264,10 +1377,16 @@
 
       // Open the account's targeting variant before using the unchanged country workflow.
       await this.ensureCountryTargetingSectionOpen();
+      const demographicsActive = h.queryShadowAll('#section_dom_id_targetingDemographics, [id*="targetingDemographics"]')
+        .some(node => h.isVisible(node));
 
       // 2. Manage existing selected tags:
       // Remove unwanted default countries, retain requested ones
       await this.cleanupUnwantedCountryTags(targetCountries);
+
+      // Removing a default tag can rerender the editable panel. Recheck the
+      // Demographics readiness immediately before the country dropdown step.
+      if (demographicsActive) await this.ensureDemographicsLocationReady();
 
       // 3. Select all requested countries using Method 1 (Direct) & Method 2 (Search)
       await this.selectTargetCountriesViaDropdown(targetCountries);

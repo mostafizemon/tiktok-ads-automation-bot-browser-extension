@@ -22,7 +22,7 @@ class Node {
       const attr = part.match(/\[([\w-]+)(?:(\*=|=)"([^"]*)")?\]/);
       if (attr && (!this.hasAttribute(attr[1]) || (attr[2] === '=' && this.getAttribute(attr[1]) !== attr[3]) ||
           (attr[2] === '*=' && !this.getAttribute(attr[1]).includes(attr[3])))) return false;
-      const prefix = part.replace(/\[[^\]]+\]/g, '');
+      const prefix = part.replace(/\[([\w-]+)(?:(\*=|=)"([^"]*)")?\]/g, '');
       if (prefix.startsWith('.')) return this.classList.contains(prefix.slice(1));
       if (prefix.startsWith('#')) return this.getAttribute('id') === prefix.slice(1);
       return !prefix || this.tagName.toLowerCase() === prefix.toLowerCase();
@@ -88,6 +88,32 @@ function audience(e, { expanded = false, delay = 0, opens = true } = {}) {
   return { panel, heading, other, link };
 }
 let passed = 0, failed = 0;
+function demographics(e, { expanded = false, animation = 0, renderDelay = 0, noEffect = false, missing = false } = {}) {
+  const panel = e.document.body.appendChild(new Node('div', { 'data-lego-collapse-aria-expanded': String(expanded) }));
+  const title = panel.appendChild(new Node('div', { 'data-testid': 'lego-content-slot-panel-title-[object Object]' }));
+  const heading = title.appendChild(new Node('span', { id: 'section_dom_id_targetingDemographics' }, 'Demographics'));
+  const chevron = title.appendChild(new Node('span', { 'data-testid': 'lego-get-chevron' }));
+  title.appendChild(new Node('ks-icon', { name: 'edit' }));
+  const content = panel.appendChild(new Node('div', { class: 'KsCollapseTransition' }));
+  content.style = { height: expanded ? 'auto' : '0px' };
+  content.computed = { opacity: expanded ? '1' : '0', overflow: 'hidden' };
+  const computed = window.getComputedStyle;
+  window.getComputedStyle = node => ({ ...computed(node), ...(node.computed || {}) });
+  const state = { panel, title, heading, chevron, content, field: null, dropdown: null };
+  state.render = () => {
+    if (!state.field) state.field = content.appendChild(new Node('div', { id: 'fieldRenderer-particleLocations' }));
+    if (!state.dropdown) state.dropdown = state.field.appendChild(new Node('div', { 'data-testid': 'lego-antd-select' }));
+  };
+  state.open = () => {
+    panel.attrs['data-lego-collapse-aria-expanded'] = 'true';
+    content.style.height = animation ? '20px' : 'auto'; content.computed.opacity = animation ? '0.5' : '1';
+    if (animation) e.later(animation, () => { content.style.height = 'auto'; content.computed.opacity = '1'; });
+    if (!missing) renderDelay ? e.later(renderDelay, state.render) : state.render();
+  };
+  chevron.onClick = () => { if (!noEffect) state.open(); };
+  if (expanded && !missing) state.render();
+  return state;
+}
 async function test(name, fn) {
   const old = Date.now;
   try { const e = setup(); Date.now = e.now; await fn(e); passed++; console.log(`PASS ${name}`); }
@@ -117,6 +143,11 @@ async function test(name, fn) {
   await test('Demographics retains priority and existing expansion', async e => {
     const state = audience(e); const panel = e.document.body.appendChild(new Node('div', { 'data-lego-collapse-aria-expanded': 'false' }));
     const demo = panel.appendChild(new Node('div', { id: 'section_dom_id_targetingDemographics' }, 'Demographics'));
+    demo.onClick = () => {
+      panel.attrs['data-lego-collapse-aria-expanded'] = 'true';
+      panel.appendChild(new Node('div', { id: 'fieldRenderer-particleLocations' }))
+        .appendChild(new Node('div', { 'data-testid': 'lego-antd-select' }));
+    };
     await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(demo.clicks, 1); assert.strictEqual(state.heading.clicks, 0);
   });
   await test('Delayed Audience controls is awaited', async e => {
@@ -135,9 +166,11 @@ async function test(name, fn) {
   await test('Missing both targeting variants stops with diagnostic', async e => {
     await assert.rejects(e.campaign.ensureCountryTargetingSectionOpen(), /Targeting section unavailable/);
   });
-  await test('Display-contents wrapper reaches real country dropdown and selects Canada', async e => {
-    const state = audience(e, { expanded: true });
+  for (const variant of ['Audience controls', 'Demographics']) {
+  await test(variant + ' ready wrapper reaches real country dropdown and selects Canada', async e => {
+    const state = variant === 'Audience controls' ? audience(e, { expanded: true }) : demographics(e, { expanded: true });
     const field = state.panel.querySelector('#fieldRenderer-particleLocations');
+    field.getBoundingClientRect = () => ({ width: 0, height: 0 });
     const trigger = field.querySelector('[data-testid="lego-antd-select"]');
     assert.strictEqual(global.AutomationHelpers.isVisible(field), false);
     const popover = e.document.body.appendChild(new Node('div', { class: 'popover' })); popover.visible = false;
@@ -156,11 +189,131 @@ async function test(name, fn) {
     await e.campaign.verifyFinalCountryTags(['Canada']);
     assert.strictEqual(trigger.clicks, 1); assert.strictEqual(checkbox.clicks, 1); assert.strictEqual(state.heading.clicks, 0);
   });
+  }
   await test('Visible field without visible interactive dropdown remains blocked', async e => {
     const state = audience(e, { expanded: true });
     const field = state.panel.querySelector('#fieldRenderer-particleLocations');
     field.querySelector('[data-testid="lego-antd-select"]').visible = false;
     await assert.rejects(e.campaign.ensureCountryTargetingSectionOpen(), /Targeting section unavailable/);
+  });
+  await test('Demographics already ready returns immediately without clicks', async e => {
+    const s = demographics(e, { expanded: true });
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.strictEqual(s.chevron.clicks, 0); assert.strictEqual(e.sleeps, 0);
+  });
+  await test('Correct associated chevron clicked once, unrelated Edit untouched', async e => {
+    const s = demographics(e);
+    const other = e.document.body.appendChild(new Node('div', { 'data-testid': 'lego-content-slot-panel-title-[object Object]' }, 'Advanced targeting'));
+    const edit = other.appendChild(new Node('ks-icon', { name: 'edit' }));
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.strictEqual(s.chevron.clicks, 1); assert.strictEqual(s.heading.clicks, 0); assert.strictEqual(edit.clicks, 0);
+  });
+  await test('Slow expansion animation finishes without duplicate toggle', async e => {
+    const s = demographics(e, { animation: 4000 });
+    const start = e.now(); await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.ok(e.now() - start >= 4000); assert.strictEqual(s.chevron.clicks, 1);
+  });
+  await test('Expanded attribute precedes delayed editable dropdown rendering', async e => {
+    const s = demographics(e, { renderDelay: 1800 });
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.ok(s.dropdown); assert.strictEqual(s.chevron.clicks, 1);
+  });
+  await test('Entire panel rerender after click reacquires new heading and dropdown', async e => {
+    const old = demographics(e); let current;
+    old.chevron.onClick = () => {
+      old.panel.visible = false; old.panel.attrs['data-lego-collapse-aria-expanded'] = 'true';
+      e.later(500, () => { current = demographics(e, { expanded: true }); });
+    };
+    const logs = []; e.campaign.diag = (...args) => logs.push(args.join(' '));
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.strictEqual(old.chevron.clicks, 1); assert.strictEqual(current.chevron.clicks, 0);
+    assert.ok(logs.some(text => text.includes('"rerender":true')));
+  });
+  await test('Mounted dropdown in collapsed opacity-zero content is not ready', async e => {
+    const s = demographics(e); s.render();
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(s.chevron.clicks, 1);
+  });
+  await test('Already expanded hidden dropdown waits until it becomes visible', async e => {
+    const s = demographics(e, { expanded: true }); s.dropdown.visible = false;
+    e.later(1600, () => { s.dropdown.visible = true; });
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(s.chevron.clicks, 0);
+  });
+  await test('First no-effect click gets exactly one confirmed-collapsed recovery', async e => {
+    const s = demographics(e);
+    s.chevron.onClick = () => { if (s.chevron.clicks === 2) s.open(); };
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(s.chevron.clicks, 2);
+  });
+  await test('Both no-effect clicks stop within bound with persisted diagnostics', async e => {
+    const s = demographics(e, { noEffect: true }); const logs = [];
+    global.StorageService = { addLog: (...args) => logs.push(args) };
+    await assert.rejects(e.campaign.ensureCountryTargetingSectionOpen(4000), /Demographics Locations dropdown/);
+    assert.strictEqual(s.chevron.clicks, 2);
+    assert.ok(logs.some(args => JSON.stringify(args).includes('readiness failed')));
+  });
+  await test('Opened panel missing dropdown fails without reopening or clearing countries', async e => {
+    const s = demographics(e, { missing: true }); let changed = false;
+    e.campaign.cleanupUnwantedCountryTags = async () => { changed = true; };
+    await assert.rejects(e.campaign.configureDemographicsAndCountries({}), /Demographics Locations dropdown/);
+    assert.strictEqual(s.chevron.clicks, 1); assert.strictEqual(changed, false);
+  });
+  await test('Expansion already transitioning is awaited without any click', async e => {
+    const s = demographics(e, { animation: 1800 }); s.open();
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(s.chevron.clicks, 0);
+  });
+  await test('Obstructed expansion control is not clicked', async e => {
+    const s = demographics(e); const overlay = e.document.body.appendChild(new Node('div'));
+    e.document.elementFromPoint = () => overlay;
+    await assert.rejects(e.campaign.ensureCountryTargetingSectionOpen(1000), /clicks=0/);
+    assert.strictEqual(s.chevron.clicks, 0);
+  });
+  await test('Overlay disappears: click only when actual control is reachable', async e => {
+    const s = demographics(e); const overlay = e.document.body.appendChild(new Node('div'));
+    e.document.elementFromPoint = () => overlay;
+    e.later(600, () => { e.document.elementFromPoint = () => s.chevron; });
+    await e.campaign.ensureCountryTargetingSectionOpen(); assert.strictEqual(s.chevron.clicks, 1);
+  });
+  await test('Pause during expansion prevents country mutation and recovery', async e => {
+    const s = demographics(e, { animation: 3000 });
+    e.later(600, () => { global.AutomationRunner.shouldAbort = true; });
+    await assert.rejects(e.campaign.ensureCountryTargetingSectionOpen(), /aborted/);
+    assert.strictEqual(s.chevron.clicks, 1);
+  });
+  await test('Clipped height-zero editable content waits even with opacity one', async e => {
+    const s = demographics(e, { expanded: true });
+    s.content.style.height = '0px';
+    e.later(1200, () => { s.content.style.height = 'auto'; });
+    const start = e.now(); await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.ok(e.now() - start >= 1200); assert.strictEqual(s.chevron.clicks, 0);
+  });
+  await test('Unrelated visible select cannot satisfy missing Demographics dropdown', async e => {
+    const s = demographics(e, { expanded: true, missing: true });
+    const other = e.document.body.appendChild(new Node('div', { 'data-testid': 'lego-antd-select' }));
+    await assert.rejects(e.campaign.ensureCountryTargetingSectionOpen(1000), /Demographics Locations dropdown/);
+    assert.strictEqual(s.chevron.clicks, 0); assert.strictEqual(other.clicks, 0);
+  });
+  await test('Country-tag cleanup rerender is awaited before country selection', async e => {
+    const s = demographics(e, { expanded: true });
+    e.campaign.cleanupUnwantedCountryTags = async () => {
+      s.dropdown.visible = false;
+      e.later(1000, () => { s.dropdown.visible = true; });
+    };
+    let selected = false;
+    e.campaign.selectTargetCountriesViaDropdown = async () => {
+      assert.strictEqual(s.dropdown.visible, true); selected = true;
+    };
+    for (const method of ['verifyFinalCountryTags', 'closeLocationDropdown', 'verifyNoLocationErrors', 'clickCommonNextButton', 'verifyNavigationToNextPage']) {
+      e.campaign[method] = async () => {};
+    }
+    await e.campaign.configureDemographicsAndCountries({ targetCountries: ['Canada'] });
+    assert.strictEqual(selected, true); assert.strictEqual(s.chevron.clicks, 0);
+  });
+  await test('Slow animation with delayed expanded attribute and missing field never toggles twice', async e => {
+    const s = demographics(e, { animation: 4000, renderDelay: 4500 });
+    s.chevron.onClick = () => {
+      s.open(); s.panel.attrs['data-lego-collapse-aria-expanded'] = 'false';
+      e.later(4500, () => { s.panel.attrs['data-lego-collapse-aria-expanded'] = 'true'; });
+    };
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.strictEqual(s.chevron.clicks, 1); assert.ok(s.dropdown);
   });
   console.log(`AUDIENCE CONTROLS TEST RESULTS: ${passed} PASSED, ${failed} FAILED`); if (failed) process.exitCode = 1;
 })();
