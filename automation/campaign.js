@@ -2585,7 +2585,12 @@
         console.log('[CTA DEBUG] Selected CTA tags: ' + JSON.stringify(tags()));
         console.log('[CTA DEBUG] Requested CTA: ' + requested);
         console.log('[CTA ERROR] ' + message);
-        throw new Error('[CTA ERROR] ' + stage + ': ' + message);
+        const error = new Error('[CTA ERROR] ' + stage + ': ' + message);
+        if (!s.rawRows.length && !s.rows.length &&
+            (message.includes('zero option rows') || message.includes('popup closed before list became ready'))) {
+          error.code = 'CTA_EMPTY_LIST';
+        }
+        throw error;
       };
       const wait = async (check, timeout = 6000) => {
         const until = Date.now() + timeout;

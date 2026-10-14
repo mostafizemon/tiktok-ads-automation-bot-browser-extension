@@ -36,6 +36,7 @@
     DEMOGRAPHICS_COUNTRIES: 'DEMOGRAPHICS_COUNTRIES',
     WEBSITE_URL: 'WEBSITE_URL',
     CONFIGURE_CTA: 'CONFIGURE_CTA',
+    CTA_RELOAD: 'CTA_RELOAD',
     OPEN_ASSETS_DRAWER: 'OPEN_ASSETS_DRAWER',
     SELECT_TIKTOK_POSTS: 'SELECT_TIKTOK_POSTS',
     AUTH_CODE_INPUT: 'AUTH_CODE_INPUT',
@@ -130,6 +131,12 @@
 
         if (this.shouldAbort || this.helpers?.isAborted()) {
           this.log('Runner aborted or paused; halting initialize resume.');
+          return;
+        }
+
+        if (jobState.currentStep === WORKFLOW_STEPS.CTA_RELOAD) {
+          this.isProcessingLock = true;
+          await this.executeCampaignLoop(jobState.currentCampaignIndex, jobState.totalCampaigns, config, true);
           return;
         }
 
@@ -245,7 +252,7 @@
      * @param {number} totalCampaigns
      * @param {object} config
      */
-    async executeCampaignLoop(startIndex, totalCampaigns, config) {
+    async executeCampaignLoop(startIndex, totalCampaigns, config, resumeCta = false) {
       let currentIndex = startIndex;
       const effectiveConfig = {
         ...config,
@@ -266,11 +273,12 @@
 
         await this.storage?.updateJobState({
           currentCampaignIndex: currentIndex,
-          currentStep: WORKFLOW_STEPS.CLICK_CREATE,
+          currentStep: resumeCta ? WORKFLOW_STEPS.CTA_RELOAD : WORKFLOW_STEPS.CLICK_CREATE,
           stepDescription: `Running Campaign ${currentIndex} of ${totalCampaigns}`
         });
 
-        const result = await this.executeSingleCampaign(currentIndex, effectiveConfig);
+        const result = await this.executeSingleCampaign(currentIndex, effectiveConfig, resumeCta);
+        resumeCta = false;
 
         if (this.shouldAbort || this.helpers?.isAborted()) {
           this.isProcessingLock = false;
@@ -609,7 +617,7 @@
      * @param {object} config
      * @returns {Promise<{ success: boolean, testMode?: boolean, ambiguous?: boolean, aborted?: boolean, campaignId?: string, error?: string }>}
      */
-    async executeSingleCampaign(campaignIndex, config) {
+    async executeSingleCampaign(campaignIndex, config, resumeCta = false) {
       const c = this.campaign;
       const h = this.helpers;
 
@@ -632,6 +640,18 @@
       }
 
       try {
+        if (resumeCta) {
+          const checkpoint = currentJob?.ctaRecovery;
+          if (!checkpoint || checkpoint.runId !== currentJob.runId || checkpoint.campaignIndex !== campaignIndex ||
+              checkpoint.url !== window.location.href || currentJob.submissionStatus === 'SUBMISSION_PENDING' ||
+              currentJob.submissionStatus === 'SUBMITTED') {
+            throw new Error('CTA refresh recovery cannot verify the original unpublished draft.');
+          }
+          if (!await c.verifyCreativeAttachmentOnPage(10000)) {
+            throw new Error('Video attachment was not retained after CTA refresh. Verify the draft manually.');
+          }
+          console.log('[CTA RECOVERY] Same draft and creative verified; resuming CTA only');
+        } else {
         // Step 1: Click Create
         if (this.shouldAbort || h.isAborted()) return { success: false, aborted: true, error: 'Aborted' };
         await this.storage?.updateJobState({
@@ -679,20 +699,6 @@
         await c.inputWebsiteUrl(config.websiteUrl);
         await h.sleep(1000);
 
-        // Step 5.5: Configure Call to Action (skipped only for legacy configs
-        // without a CTA; the popup requires a CTA for all new runs).
-        if (this.shouldAbort) return { success: false, aborted: true, error: 'Aborted' };
-        if (config.callToAction && String(config.callToAction).trim()) {
-          await this.storage?.updateJobState({
-            currentStep: WORKFLOW_STEPS.CONFIGURE_CTA,
-            stepDescription: `[#${campaignIndex}] Configuring Call to Action`
-          });
-          await c.configureCallToAction(config.callToAction);
-          await h.sleep(1000);
-        } else {
-          console.log('[CTA] No Call to Action in config; skipping CTA step (legacy config)');
-        }
-
         // Step 6: Creative Assets -> Click Add
         if (this.shouldAbort) return { success: false, aborted: true, error: 'Aborted' };
         await this.storage?.updateJobState({
@@ -711,6 +717,37 @@
         });
         await c.attachSparkAdsPostWithRetry(config.authCode, campaignIndex);
         await h.sleep(1500);
+        }
+
+        // Configure CTA after attaching the video; a recovery resumes here only.
+        if (this.shouldAbort || h.isAborted()) return { success: false, aborted: true, error: 'Aborted' };
+        if (config.callToAction && String(config.callToAction).trim()) {
+          await this.storage?.updateJobState({ currentStep: WORKFLOW_STEPS.CONFIGURE_CTA,
+            stepDescription: `[#${campaignIndex}] Configuring Call to Action after video attachment` });
+          try {
+            await c.configureCallToAction(config.callToAction);
+          } catch (error) {
+            if (error.code !== 'CTA_EMPTY_LIST' || resumeCta) throw error;
+            const job = await this.storage?.getJobState();
+            const previous = job?.ctaRecovery;
+            if (previous?.runId === job.runId && previous.campaignIndex === campaignIndex) throw error;
+            const url = new URL(window.location.href);
+            if (!job?.runId || !url.searchParams.get('campaign_draft_id') || !url.searchParams.get('adgroup_draft_id')) {
+              throw new Error('CTA list empty; refresh requires a saved campaign/ad-group draft.');
+            }
+            if (this.shouldAbort || h.isAborted()) return { success: false, aborted: true };
+            const saved = await this.storage.saveJobState({ ...job, currentStep: WORKFLOW_STEPS.CTA_RELOAD,
+              ctaRecovery: { runId: job.runId, campaignIndex, url: url.href },
+              stepDescription: 'CTA list empty; refreshing saved draft once' });
+            if (!saved) throw new Error('CTA refresh checkpoint could not be persisted.');
+            const live = await this.storage.getJobState();
+            if (live.status !== RUNNER_STATES.RUNNING || this.shouldAbort || h.isAborted()) return { success: false, aborted: true };
+            console.log('[CTA RECOVERY] Empty list; refreshing saved draft once');
+            window.location.reload();
+            return { success: true, reloading: true };
+          }
+          await h.sleep(1000);
+        }
 
         // Step 11: Final Publishing Step
         if (this.shouldAbort) return { success: false, aborted: true, error: 'Aborted' };
@@ -801,7 +838,8 @@
       });
 
       this.log('Automation resumed.');
-      this.executeCampaignLoop(jobState.currentCampaignIndex || 1, jobState.totalCampaigns || 1, config);
+      this.executeCampaignLoop(jobState.currentCampaignIndex || 1, jobState.totalCampaigns || 1, config,
+        jobState.currentStep === WORKFLOW_STEPS.CTA_RELOAD);
 
       return { success: true };
     }
