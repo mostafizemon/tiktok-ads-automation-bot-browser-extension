@@ -296,6 +296,7 @@ function ctaFixture(env, opts = {}) {
       // Off-screen rows exist in the DOM with layout but are scrolled out of
       // the popup viewport; hiddenSelected rows are unrendered until swept.
       li.visible = !hiddenSelected.includes(label) && !offscreenSelected.includes(label);
+      li.scrollIntoView = () => { li.visible = true; };
       const box = li.appendChild(new Node('ks-checkbox-923', { role: 'checkbox', 'aria-checked': checked.has(label) ? 'true' : 'false' }));
       const labelDiv = li.appendChild(new Node('div', { class: 'menu-item-base__content--text--label' }));
       // REAL STRUCTURE: the LI contains only an empty named slot; no text.
@@ -393,6 +394,7 @@ function visibleTags(fx, label) {
     assert.deepStrictEqual(Object.keys(fx.tags).filter(key => key !== '+more'), [label]);
     assert.strictEqual(fx.state.clearClicks, 0);
     assert.strictEqual(fx.state.decoyClicks, 0);
+    assert.ok(!fx.state.events.some(event => event.startsWith('search:')), 'CTA search input is never changed');
     assert.ok(!fx.state.events.includes('click:Select all'));
     assert.ok(fx.state.selectedSnapshots.every(tags => tags.length > 0), 'never intentionally reaches zero selections');
   };
@@ -457,15 +459,9 @@ function visibleTags(fx, label) {
     await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
     assert.strictEqual(fx.state.triggerClicks, 1);
   });
-  await test('Temporary No Data during search settles non-destructively', async env => {
-    const fx = ctaFixture(env); const dispatch = fx.search.dispatchEvent;
-    fx.search.dispatchEvent = event => {
-      dispatch(event);
-      if (event.type === 'input' && fx.search.value === 'Order now') {
-        const ready = [...fx.ul.children]; fx.ul.children = [];
-        env.later(1000, () => { fx.ul.children = ready; });
-      }
-    };
+  await test('Temporary No Data list rendering settles without search', async env => {
+    const fx = ctaFixture(env); fx.ul.children = [];
+    env.later(1000, () => fx.restoreOptions());
     await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
     assert.strictEqual(fx.state.triggerClicks, 1);
   });
@@ -474,7 +470,7 @@ function visibleTags(fx, label) {
     await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
     assert.strictEqual(fx.state.triggerClicks, 3);
   });
-  await test('Order now search shows No Data but unfiltered exact row succeeds', async env => {
+  await test('Order now selected directly even when using Search would produce No Data', async env => {
     const fx = ctaFixture(env, { preselected: ['Watch now'] });
     const dispatch = fx.search.dispatchEvent;
     fx.search.dispatchEvent = event => {
@@ -484,11 +480,11 @@ function visibleTags(fx, label) {
     const logs = await captureLogs(() => env.campaign.configureCallToAction('Order now'));
     verify(fx, 'Order now');
     assert.strictEqual(fx.rows['Order now'].clicks, 1);
-    assert.strictEqual(fx.state.events.filter(event => event === 'search:Order now').length, 1);
+    assert.strictEqual(fx.state.events.filter(event => event === 'search:Order now').length, 0);
     assert.strictEqual(fx.state.triggerClicks, 1);
-    assert.ok(logs.some(line => line.includes('Exact CTA recovered after clearing search filter: Order now')));
+    assert.ok(logs.some(line => line.includes('Exact CTA found in dropdown list: Order now')));
   });
-  await test('Order now only recovers after scoped reopen without repeating broken search', async env => {
+  await test('Order now ignores a search component that would remove option rows', async env => {
     const fx = ctaFixture(env, { preselected: ['Watch now'] });
     const dispatch = fx.search.dispatchEvent;
     fx.search.dispatchEvent = event => {
@@ -501,8 +497,8 @@ function visibleTags(fx, label) {
       if (fx.state.triggerClicks >= 3) fx.restoreOptions();
     };
     await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
-    assert.strictEqual(fx.state.triggerClicks, 3);
-    assert.strictEqual(fx.state.events.filter(event => event === 'search:Order now').length, 1);
+    assert.strictEqual(fx.state.triggerClicks, 1);
+    assert.strictEqual(fx.state.events.filter(event => event === 'search:Order now').length, 0);
   });
   await test('Permanent No Data preserves initial tags and identifies search stage', async env => {
     const fx = ctaFixture(env, { noDataForever: true });
@@ -515,15 +511,13 @@ function visibleTags(fx, label) {
       assert.ok(logs.some(line => line.includes(field)), field);
     }
   });
-  await test('Missing search preserves initial selection', async env => {
+  await test('Missing search input does not prevent direct CTA selection', async env => {
     const fx = ctaFixture(env, { missingSearch: true });
-    await assert.rejects(env.campaign.configureCallToAction('Order now'), /search input not found/);
-    assert.deepStrictEqual(Object.keys(fx.tags), ['Experience now', 'Apply now']);
-    assert.strictEqual(fx.state.clearClicks, 0);
+    await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
   });
   await test('Genuine unavailability does not mutate tags', async env => {
     const fx = ctaFixture(env);
-    await assert.rejects(env.campaign.configureCallToAction('Fly now'), /not found in loaded results|zero option rows/);
+    await assert.rejects(env.campaign.configureCallToAction('Fly now'), /not found in loaded dropdown list|zero option rows/);
     assert.deepStrictEqual(Object.keys(fx.tags), ['Experience now', 'Apply now']);
     assert.strictEqual(fx.state.clearClicks, 0); assert.deepStrictEqual(fx.state.selectedSnapshots, []);
   });
@@ -591,10 +585,11 @@ function visibleTags(fx, label) {
     row.visible = false; row.scrollIntoView = () => { row.visible = true; };
     await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
   });
-  await test('Stale filter cleared only in the scoped CTA popup', async env => {
+  await test('Search fields are untouched during direct CTA selection', async env => {
     const fx = ctaFixture(env, { staleFilter: 'Something else' });
     const other = env.document.body.appendChild(new Node('input', { part: 'input', placeholder: 'Search' })); other.value = 'Canada';
     await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now'); assert.strictEqual(other.value, 'Canada');
+    assert.strictEqual(fx.search.value, 'Something else');
   });
   await test('Two campaigns independently verify requested CTA', async env => {
     const first = ctaFixture(env); await env.campaign.configureCallToAction('Watch now'); first.section.visible = false;
@@ -620,6 +615,25 @@ function visibleTags(fx, label) {
     const fx = ctaFixture(env);
     await assert.rejects(env.campaign.configureCallToAction(''), /required/);
     assert.strictEqual(fx.state.triggerClicks, 0);
+  });
+  await test('Virtualized Order now is found by scrolling only the menu', async env => {
+    const fx = ctaFixture(env, { preselected: ['Watch now'] });
+    fx.ul.children = [fx.rows['Watch now']];
+    const wrapper = fx.ul.parentElement; let position = 0;
+    Object.defineProperty(wrapper, 'scrollTop', {
+      get: () => position,
+      set: value => { position = value; if (position >= 220) fx.restoreOptions(); }
+    });
+    await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
+    assert.ok(position >= 220); assert.strictEqual(fx.rows['Order now'].clicks, 1);
+  });
+  await test('Existing filter hiding requested row is reported without modifying Search', async env => {
+    const fx = ctaFixture(env, { staleFilter: 'Watch now', preselected: ['Watch now'] });
+    fx.ul.children = [fx.rows['Watch now']];
+    await assert.rejects(env.campaign.configureCallToAction('Order now'), /filtered by existing search text/);
+    assert.strictEqual(fx.search.value, 'Watch now'); assert.strictEqual(fx.state.clearClicks, 0);
+    assert.ok(!fx.state.events.some(event => event.startsWith('search:')));
+    assert.deepStrictEqual(Object.keys(fx.tags), ['Watch now']);
   });
   console.log('CTA SELECTION TEST RESULTS: ' + passed + ' PASSED, ' + failed + ' FAILED');
   process.exitCode = failed ? 1 : 0;

@@ -2185,11 +2185,6 @@
         if (!await wait(() => state().open)) fail('Dropdown did not open');
         console.log('[CTA] Dropdown opened');
       };
-      const fillSearch = (input, value) => {
-        guard();
-        click(input);
-        h.setNativeInputValue(input, value);
-      };
       const findRow = label => {
         const s = state();
         return s.open && s.rows.find(row => {
@@ -2197,58 +2192,50 @@
           return text !== 'select all' && text === this.normalizeCtaText(label).toLowerCase();
         });
       };
-      const recover = async label => {
-        if (retryCount >= 1) return null;
-        retryCount++;
-        logStage('Recover associated CTA dropdown');
-        let s = state();
-        if (s.search?.value) fillSearch(s.search, '');
-        // Some builds show No Data for a valid search even though the exact
-        // option exists in the unfiltered list. Inspect that list before
-        // repeating the same filter that failed.
-        let unfilteredRow = await wait(() => findRow(label), 2000);
-        if (unfilteredRow) {
-          logStage('Exact CTA recovered after clearing search filter: ' + label);
-          return unfilteredRow;
-        }
-        s = state();
-        if (s.open) {
-          if (!s.trigger) fail('Dropdown arrow not found during recovery');
-          click(s.trigger);
-          if (!await wait(() => !state().open, 2000)) fail('Dropdown did not close during recovery');
-        }
-        await open();
-        s = await wait(() => { const current = state(); return current.open && current.search ? current : null; });
-        if (!s) fail('CTA search input not found after recovery');
-        if (s.search.value) fillSearch(s.search, '');
-        unfilteredRow = await wait(() => findRow(label), 2000);
-        if (unfilteredRow) {
-          logStage('Exact CTA recovered in reopened unfiltered list: ' + label);
-          return unfilteredRow;
-        }
-        fillSearch(s.search, label);
-        await h.sleep(500);
-        return wait(() => findRow(label));
+      const waitForListRow = async label => {
+        let scrollSteps = 0;
+        let polls = 0;
+        return wait(() => {
+          const row = findRow(label);
+          if (row) return row;
+          const s = state();
+          // Inspect all mounted rows, then advance only the associated menu's
+          // scroll container for virtualized options. Never scroll the page.
+          if (s.open && ++polls % 2 === 0 && scrollSteps < 3) {
+            const scroller = [...deep(s.spinner || s.list, '[part="list"]'),
+              ...deep(s.spinner || s.list, '.dropdown-menu__list__wrapper')]
+              .find(node => typeof node.scrollTop === 'number');
+            if (scroller) { scroller.scrollTop += 220; scrollSteps++; }
+          }
+          return null;
+        });
       };
-      const searchRow = async label => {
-        logStage('Open CTA dropdown for ' + label);
+      const findCtaRowInList = async label => {
+        logStage('Find CTA directly in dropdown list: ' + label);
         await open();
-        let s = await wait(() => { const current = state(); return current.open && current.search ? current : null; });
-        if (!s) fail('CTA search input not found');
-        logStage('Search CTA: ' + label);
-        if (s.search.value) fillSearch(s.search, '');
-        fillSearch(state().search || s.search, label);
-        await h.sleep(500);
-        let row = await wait(() => findRow(label));
-        if (!row) row = await recover(label);
-        if (!row) {
-          s = state();
-          const labels = s.rows.map(item => this.resolveCtaOptionLabel(item, select));
-          if (!s.open) fail('CTA popup closed before search results became ready');
-          if (!s.rows.length) fail('Search results unavailable: zero option rows after bounded recovery');
-          if (labels.some(text => !text)) fail('CTA option labels unresolved after bounded recovery');
-          fail('Requested CTA not found in loaded results: ' + label);
+        let row = await waitForListRow(label);
+        if (!row && retryCount < 1) {
+          retryCount++;
+          logStage('Reopen associated CTA list without search');
+          const s = state();
+          if (s.open) {
+            if (!s.trigger) fail('Dropdown arrow not found during list recovery');
+            click(s.trigger);
+            if (!await wait(() => !state().open, 2000)) fail('Dropdown did not close during list recovery');
+          }
+          await open();
+          row = await waitForListRow(label);
         }
+        if (!row) {
+          const s = state();
+          const labels = s.rows.map(item => this.resolveCtaOptionLabel(item, select));
+          if (!s.open) fail('CTA popup closed before list became ready');
+          if (s.search?.value) fail('CTA list is filtered by existing search text; search input left unchanged');
+          if (!s.rows.length) fail('Dropdown list unavailable: zero option rows after bounded recovery');
+          if (labels.some(text => !text)) fail('CTA option labels unresolved after bounded recovery');
+          fail('Requested CTA not found in loaded dropdown list: ' + label);
+        }
+        console.log('[CTA] Exact CTA found in dropdown list: ' + label);
         return row;
       };
       if (!await wait(() => { refresh(); return section; })) fail('CTA section not found');
@@ -2277,7 +2264,7 @@
       // Preserve every current tag until the requested CTA is verified selected.
       if (!tags().some(same)) {
         await ensureEditor();
-        const row = await searchRow(requested);
+        const row = await findCtaRowInList(requested);
         logStage('Select requested CTA: ' + requested);
         const checkbox = deep(row, '[role="checkbox"]')[0];
         if (checkbox?.getAttribute('aria-checked') !== 'true') click(row);
@@ -2318,7 +2305,7 @@
           logStage('Individual tag control unavailable or unchanged: ' + label + '; use scoped checkbox');
           await ensureEditor();
           if (absent()) continue;
-          const row = await searchRow(label);
+          const row = await findCtaRowInList(label);
           refresh();
           if (!tags().some(same)) fail('Requested CTA tag missing before checkbox deselection');
           const box = deep(row, '[role="checkbox"]')[0];
