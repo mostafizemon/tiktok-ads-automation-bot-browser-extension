@@ -635,6 +635,53 @@ function visibleTags(fx, label) {
     assert.ok(!fx.state.events.some(event => event.startsWith('search:')));
     assert.deepStrictEqual(Object.keys(fx.tags), ['Watch now']);
   });
+  await test('Obsolete hidden popup before live CTA popup does not hide current rows', async env => {
+    const fx = ctaFixture(env);
+    const root = fx.dropdownMenu.shadowRoot;
+    const oldPopover = root.appendChild(new Node('ks-popover-obsolete'));
+    oldPopover.visible = false;
+    oldPopover.appendChild(new Node('div', { class: 'dropdown-menu__popup' }))
+      .appendChild(new Node('ks-dropdown-menu-list-obsolete')).shadow()
+      .appendChild(new Node('ks-spinner-obsolete'));
+    root.children = [oldPopover, ...root.children.filter(node => node !== oldPopover)];
+    await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
+    assert.strictEqual(fx.state.triggerClicks, 1);
+  });
+  await test('Empty old list/spinner before replacement list does not yield zero rows', async env => {
+    const fx = ctaFixture(env);
+    const old = fx.popup.appendChild(new Node('ks-dropdown-menu-list-old'));
+    old.shadow().appendChild(new Node('ks-spinner-old')).shadow().appendChild(new Node('slot'));
+    fx.popup.children = [old, ...fx.popup.children.filter(node => node !== old)];
+    await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
+    assert.strictEqual(fx.state.triggerClicks, 1);
+  });
+  await test('Native checkbox host without role during hydration remains selectable', async env => {
+    const fx = ctaFixture(env);
+    for (const box of Object.values(fx.boxes)) delete box.attrs.role;
+    await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
+  });
+  await test('One transient popup closure during list loading recovers without global clear', async env => {
+    const fx = ctaFixture(env);
+    fx.ul.children = [];
+    const clicked = fx.arrow.onClick;
+    fx.arrow.onClick = () => {
+      clicked();
+      if (fx.state.triggerClicks === 1) env.later(1000, () => { fx.dropdownMenu.visible = false; });
+      else fx.restoreOptions();
+    };
+    await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
+    assert.strictEqual(fx.state.triggerClicks, 2);
+  });
+  await test('Visible current row wins over hidden obsolete row with the same CTA label', async env => {
+    const fx = ctaFixture(env);
+    const oldList = fx.popup.appendChild(new Node('ks-dropdown-menu-list-old')); oldList.visible = false;
+    const oldRow = oldList.shadow().appendChild(new Node('li', { class: 'dropdown-item' }));
+    oldRow.appendChild(new Node('ks-checkbox-old', { role: 'checkbox', 'aria-checked': 'false' }));
+    oldRow.appendChild(new Node('div', { class: 'menu-item-base__content--text--label' }, 'Order now'));
+    fx.popup.children = [oldList, ...fx.popup.children.filter(node => node !== oldList)];
+    await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
+    assert.strictEqual(oldRow.clicks, 0); assert.strictEqual(fx.rows['Order now'].clicks, 1);
+  });
   console.log('CTA SELECTION TEST RESULTS: ' + passed + ' PASSED, ' + failed + ' FAILED');
   process.exitCode = failed ? 1 : 0;
 })();

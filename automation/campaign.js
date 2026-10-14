@@ -2240,17 +2240,29 @@
       );
       const tags = () => tagNodes().map(node => this.normalizeCtaText(node.textContent))
         .filter(text => text && !/^\+\s*\d+\s*more$/i.test(text) && text.toLowerCase() !== 'select');
+      const rowCheckbox = row => deep(row, '[role="checkbox"]')[0] || prefix(row, 'ks-checkbox-')[0];
       const state = () => {
         refresh();
-        const dropdown = deep(select, '[part="dropdown"]')[0] || prefix(select, 'ks-dropdown-menu-')
-          .find(node => !node.tagName.toLowerCase().startsWith('ks-dropdown-menu-list-'));
-        const popover = prefix(dropdown, 'ks-popover-')[0];
+        const dropdowns = [...new Set([...deep(select, '[part="dropdown"]'), ...prefix(select, 'ks-dropdown-menu-')])]
+          .filter(node => !node.tagName.toLowerCase().startsWith('ks-dropdown-menu-list-'));
+        const branches = dropdowns.flatMap(dropdown => prefix(dropdown, 'ks-popover-').flatMap(popover =>
+          deep(popover, '.dropdown-menu__popup').map(popup => ({ dropdown, popover, popup }))));
+        // Rerenders may retain a mounted obsolete popup before the current one.
+        // Resolve the rendered branch associated with this select, not index 0.
+        const active = branches.filter(branch => visible(branch.popup) &&
+          (!deep(branch.popover, '.tooltip__popup').length || deep(branch.popover, '.tooltip__popup').some(visible)));
+        if (active.length > 1) throw new Error('[CTA ERROR] Multiple visible associated CTA popups; refusing ambiguous selection');
+        const branch = active[0] || branches[0];
+        const dropdown = branch?.dropdown || dropdowns[0];
+        const popover = branch?.popover || prefix(dropdown, 'ks-popover-')[0];
         // Popup/list are LIGHT DOM descendants of popover; spinner is in list shadow.
-        const popup = deep(popover || dropdown, '.dropdown-menu__popup')[0];
+        const popup = branch?.popup || deep(popover || dropdown, '.dropdown-menu__popup')[0];
         const list = prefix(popup || popover || dropdown, 'ks-dropdown-menu-list-')[0];
         const spinner = prefix(list, 'ks-spinner-')[0];
-        const rows = deep(spinner || list || popup, 'li.dropdown-item, li.menu-item-base, [role="option"]')
-          .filter(row => deep(row, '[role="checkbox"]').length > 0);
+        // Scan the whole active popup: a stale/empty spinner can precede a
+        // replacement list. Both spinner light DOM and list shadow DOM count.
+        const rawRows = deep(popup || list || spinner, 'li.dropdown-item, li.menu-item-base, [role="option"]');
+        const rows = rawRows.filter(row => rowCheckbox(row));
         const field = deep(select, '[part="field"]')
           .find(node => node.tagName.toLowerCase().startsWith('ks-value-field-')) ||
           prefix(select, 'ks-value-field-')[0];
@@ -2260,14 +2272,14 @@
         const trigger = arrow || (visible(base) ? base : null);
         const surfaces = deep(popover || dropdown, '.tooltip__popup');
         const surface = surfaces.find(visible);
-        const owner = [select, dropdown, popover].find(node => node?.hasAttribute('ks-open'));
+        const owner = [popover, dropdown, select].find(node => node?.hasAttribute('ks-open'));
         const closed = owner?.getAttribute('ks-open') === 'false' ||
           trigger?.getAttribute('aria-expanded') === 'false';
         // Rows can stay mounted while closed. Require the rendered popup/surface.
         const open = !closed && (surfaces.length ? !!surface : visible(popup));
         const search = deep(popup || popover || dropdown, 'input[part="input"][placeholder="Search"]')
           .find(node => visible(node) && enabled(node));
-        return { dropdown, popover, popup, list, spinner, rows, field, trigger, open, search };
+        return { dropdown, popover, popup, list, spinner, rows, rawRows, branches: branches.length, field, trigger, open, search };
       };
       const connected = node => {
         if (!node) return false;
@@ -2288,6 +2300,7 @@
         console.log('[CTA] Selected tags after: ' + JSON.stringify(after));
         console.log('[CTA] Dropdown open: ' + s.open);
         console.log('[CTA] Dropdown option rows: ' + s.rows.length);
+        console.log('[CTA] Raw dropdown rows: ' + s.rawRows.length + '; associated popup branches: ' + s.branches);
         console.log('[CTA] Resolved labels: ' + JSON.stringify(s.rows.map(row => this.resolveCtaOptionLabel(row, select))));
         console.log('[CTA] Search input found: ' + !!s.search);
         console.log('[CTA] Search value: ' + (s.search?.value || ''));
@@ -2359,10 +2372,11 @@
       };
       const findRow = label => {
         const s = state();
-        return s.open && s.rows.find(row => {
+        const matches = s.open ? s.rows.filter(row => {
           const text = this.normalizeCtaText(this.resolveCtaOptionLabel(row, select)).toLowerCase();
           return text !== 'select all' && text === this.normalizeCtaText(label).toLowerCase();
-        });
+        }) : [];
+        return matches.find(visible) || matches[0];
       };
       const waitForListRow = async label => {
         let scrollSteps = 0;
@@ -2438,12 +2452,12 @@
         await ensureEditor();
         const row = await findCtaRowInList(requested);
         logStage('Select requested CTA: ' + requested);
-        const checkbox = deep(row, '[role="checkbox"]')[0];
+        const checkbox = rowCheckbox(row);
         if (checkbox?.getAttribute('aria-checked') !== 'true') click(row);
         if (!await wait(() => {
           refresh();
           const current = findRow(requested);
-          const box = current && deep(current, '[role="checkbox"]')[0];
+          const box = current && rowCheckbox(current);
           return tags().some(same) && (!current || box?.getAttribute('aria-checked') === 'true');
         })) fail('Requested CTA tag did not appear after selection; existing tags were preserved');
         logStage('Requested CTA verified before removing other tags');
@@ -2480,7 +2494,7 @@
           const row = await findCtaRowInList(label);
           refresh();
           if (!tags().some(same)) fail('Requested CTA tag missing before checkbox deselection');
-          const box = deep(row, '[role="checkbox"]')[0];
+          const box = rowCheckbox(row);
           if (box?.getAttribute('aria-checked') !== 'true') fail('Unwanted CTA tag and checkbox state disagree: ' + label);
           click(row);
           if (!await wait(absent)) fail('Individual CTA removal did not update the field: ' + label);
