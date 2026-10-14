@@ -2203,7 +2203,14 @@
         logStage('Recover associated CTA dropdown');
         let s = state();
         if (s.search?.value) fillSearch(s.search, '');
-        await h.sleep(300);
+        // Some builds show No Data for a valid search even though the exact
+        // option exists in the unfiltered list. Inspect that list before
+        // repeating the same filter that failed.
+        let unfilteredRow = await wait(() => findRow(label), 2000);
+        if (unfilteredRow) {
+          logStage('Exact CTA recovered after clearing search filter: ' + label);
+          return unfilteredRow;
+        }
         s = state();
         if (s.open) {
           if (!s.trigger) fail('Dropdown arrow not found during recovery');
@@ -2213,6 +2220,12 @@
         await open();
         s = await wait(() => { const current = state(); return current.open && current.search ? current : null; });
         if (!s) fail('CTA search input not found after recovery');
+        if (s.search.value) fillSearch(s.search, '');
+        unfilteredRow = await wait(() => findRow(label), 2000);
+        if (unfilteredRow) {
+          logStage('Exact CTA recovered in reopened unfiltered list: ' + label);
+          return unfilteredRow;
+        }
         fillSearch(s.search, label);
         await h.sleep(500);
         return wait(() => findRow(label));

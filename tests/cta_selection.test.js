@@ -474,6 +474,36 @@ function visibleTags(fx, label) {
     await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
     assert.strictEqual(fx.state.triggerClicks, 3);
   });
+  await test('Order now search shows No Data but unfiltered exact row succeeds', async env => {
+    const fx = ctaFixture(env, { preselected: ['Watch now'] });
+    const dispatch = fx.search.dispatchEvent;
+    fx.search.dispatchEvent = event => {
+      dispatch(event);
+      if (fx.search.value === 'Order now') fx.ul.children = [];
+    };
+    const logs = await captureLogs(() => env.campaign.configureCallToAction('Order now'));
+    verify(fx, 'Order now');
+    assert.strictEqual(fx.rows['Order now'].clicks, 1);
+    assert.strictEqual(fx.state.events.filter(event => event === 'search:Order now').length, 1);
+    assert.strictEqual(fx.state.triggerClicks, 1);
+    assert.ok(logs.some(line => line.includes('Exact CTA recovered after clearing search filter: Order now')));
+  });
+  await test('Order now only recovers after scoped reopen without repeating broken search', async env => {
+    const fx = ctaFixture(env, { preselected: ['Watch now'] });
+    const dispatch = fx.search.dispatchEvent;
+    fx.search.dispatchEvent = event => {
+      dispatch(event);
+      if (fx.search.value === 'Order now' || fx.state.triggerClicks < 3) fx.ul.children = [];
+    };
+    const arrowClick = fx.arrow.onClick;
+    fx.arrow.onClick = () => {
+      arrowClick();
+      if (fx.state.triggerClicks >= 3) fx.restoreOptions();
+    };
+    await env.campaign.configureCallToAction('Order now'); verify(fx, 'Order now');
+    assert.strictEqual(fx.state.triggerClicks, 3);
+    assert.strictEqual(fx.state.events.filter(event => event === 'search:Order now').length, 1);
+  });
   await test('Permanent No Data preserves initial tags and identifies search stage', async env => {
     const fx = ctaFixture(env, { noDataForever: true });
     const logs = await captureLogs(async () => {
