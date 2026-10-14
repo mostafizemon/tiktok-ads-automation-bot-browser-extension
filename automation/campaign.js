@@ -1880,8 +1880,8 @@
     }
 
     /**
-     * Robust CTA section locator. The root ID may disappear after Clear All
-     * re-renders the field, so fall back to stable anchors and the visible
+     * Robust CTA section locator. The root ID may disappear when the field
+     * re-renders, so fall back to stable anchors and the visible
      * "Call to action text" heading. Never matches an unrelated dropdown.
      * @returns {HTMLElement|null}
      */
@@ -2013,8 +2013,8 @@
      * Section: #fieldRenderer-callToActionAssetList
      * Title: "Call to action text"
      * Editor: ks-select-923 with nested Shadow DOM
-     * Strategy: open the associated menu, verify availability, clear once,
-     * search the configured CTA, then verify exactly one selected tag.
+     * Select the requested CTA first, remove other tags individually, then
+     * verify exactly one selected tag. Never clear the field globally.
      * Options: li.dropdown-item with ks-checkbox-923, label via named slots
      * @param {string} callToAction
      */
@@ -2054,15 +2054,19 @@
       let section = null;
       let select = null;
       let arrowClicked = false;
-      let clearClicked = false;
+      const started = Date.now();
+      let stage = 'Locate CTA section';
+      let retryCount = 0;
+      let lastSelected = [];
       const refresh = () => {
         section = this.findCtaSection();
         select = section && this.findCtaSelectInSection(section);
       };
-      const tags = () => deep(select || section).filter(node =>
+      const tagNodes = () => deep(select || section).filter(node =>
         node.tagName?.toLowerCase().startsWith('ks-tag-') &&
         node.classList.contains('value-field__tagged__tag-item')
-      ).map(node => this.normalizeCtaText(node.textContent))
+      );
+      const tags = () => tagNodes().map(node => this.normalizeCtaText(node.textContent))
         .filter(text => text && !/^\+\s*\d+\s*more$/i.test(text) && text.toLowerCase() !== 'select');
       const state = () => {
         refresh();
@@ -2082,8 +2086,6 @@
           .find(node => visible(node) && deep(node, '[name="chevron-up"], [name="chevron-down"]').length > 0);
         const base = field?.shadowRoot?.querySelector('[part="base"]');
         const trigger = arrow || (visible(base) ? base : null);
-        const clear = deep(field, '.value-field__clear[part="suffixIcon"]')
-          .find(node => visible(node) && enabled(node));
         const surfaces = deep(popover || dropdown, '.tooltip__popup');
         const surface = surfaces.find(visible);
         const owner = [select, dropdown, popover].find(node => node?.hasAttribute('ks-open'));
@@ -2093,9 +2095,39 @@
         const open = !closed && (surfaces.length ? !!surface : visible(popup));
         const search = deep(popup || popover || dropdown, 'input[part="input"][placeholder="Search"]')
           .find(node => visible(node) && enabled(node));
-        return { dropdown, popover, popup, list, spinner, rows, field, trigger, clear, open, search };
+        return { dropdown, popover, popup, list, spinner, rows, field, trigger, open, search };
+      };
+      const connected = node => {
+        if (!node) return false;
+        if (typeof node.isConnected === 'boolean') return node.isConnected;
+        for (let current = node; current;) {
+          if (current === document) return true;
+          current = current.parentElement || current.getRootNode?.().host;
+        }
+        return false;
+      };
+      const logStage = name => {
+        stage = name;
+        const s = state();
+        const after = tags();
+        console.log('[CTA] Stage: ' + stage);
+        console.log('[CTA] Requested CTA: ' + requested);
+        console.log('[CTA] Selected tags before: ' + JSON.stringify(lastSelected));
+        console.log('[CTA] Selected tags after: ' + JSON.stringify(after));
+        console.log('[CTA] Dropdown open: ' + s.open);
+        console.log('[CTA] Dropdown option rows: ' + s.rows.length);
+        console.log('[CTA] Resolved labels: ' + JSON.stringify(s.rows.map(row => this.resolveCtaOptionLabel(row, select))));
+        console.log('[CTA] Search input found: ' + !!s.search);
+        console.log('[CTA] Search value: ' + (s.search?.value || ''));
+        console.log('[CTA] No Data visible: ' + deep(s.popup || s.popover, '.dropdown-empty, [class*="empty"], [role="status"]')
+          .some(node => visible(node) && /no data/i.test(node.textContent || '')));
+        console.log('[CTA] CTA select connected: ' + connected(select));
+        console.log('[CTA] CTA menu connected: ' + connected(s.popup || s.dropdown));
+        console.log('[CTA] Elapsed ms: ' + (Date.now() - started) + '; recovery count: ' + retryCount + '/1');
+        lastSelected = after;
       };
       const fail = message => {
+        logStage(stage + ' — failed');
         const s = state();
         console.log('[CTA DEBUG] CTA section found: ' + !!section);
         console.log('[CTA DEBUG] CTA select host found: ' + !!select);
@@ -2116,7 +2148,7 @@
         console.log('[CTA DEBUG] Selected CTA tags: ' + JSON.stringify(tags()));
         console.log('[CTA DEBUG] Requested CTA: ' + requested);
         console.log('[CTA ERROR] ' + message);
-        throw new Error('[CTA ERROR] ' + message);
+        throw new Error('[CTA ERROR] ' + stage + ': ' + message);
       };
       const wait = async (check, timeout = 6000) => {
         const until = Date.now() + timeout;
@@ -2158,102 +2190,132 @@
         click(input);
         h.setNativeInputValue(input, value);
       };
-      const target = () => {
+      const findRow = label => {
         const s = state();
-        return s.open && s.rows.find(row => same(this.resolveCtaOptionLabel(row, select)));
+        return s.open && s.rows.find(row => {
+          const text = this.normalizeCtaText(this.resolveCtaOptionLabel(row, select)).toLowerCase();
+          return text !== 'select all' && text === this.normalizeCtaText(label).toLowerCase();
+        });
+      };
+      const recover = async label => {
+        if (retryCount >= 1) return null;
+        retryCount++;
+        logStage('Recover associated CTA dropdown');
+        let s = state();
+        if (s.search?.value) fillSearch(s.search, '');
+        await h.sleep(300);
+        s = state();
+        if (s.open) {
+          if (!s.trigger) fail('Dropdown arrow not found during recovery');
+          click(s.trigger);
+          if (!await wait(() => !state().open, 2000)) fail('Dropdown did not close during recovery');
+        }
+        await open();
+        s = await wait(() => { const current = state(); return current.open && current.search ? current : null; });
+        if (!s) fail('CTA search input not found after recovery');
+        fillSearch(s.search, label);
+        await h.sleep(500);
+        return wait(() => findRow(label));
+      };
+      const searchRow = async label => {
+        logStage('Open CTA dropdown for ' + label);
+        await open();
+        let s = await wait(() => { const current = state(); return current.open && current.search ? current : null; });
+        if (!s) fail('CTA search input not found');
+        logStage('Search CTA: ' + label);
+        if (s.search.value) fillSearch(s.search, '');
+        fillSearch(state().search || s.search, label);
+        await h.sleep(500);
+        let row = await wait(() => findRow(label));
+        if (!row) row = await recover(label);
+        if (!row) {
+          s = state();
+          const labels = s.rows.map(item => this.resolveCtaOptionLabel(item, select));
+          if (!s.open) fail('CTA popup closed before search results became ready');
+          if (!s.rows.length) fail('Search results unavailable: zero option rows after bounded recovery');
+          if (labels.some(text => !text)) fail('CTA option labels unresolved after bounded recovery');
+          fail('Requested CTA not found in loaded results: ' + label);
+        }
+        return row;
       };
       if (!await wait(() => { refresh(); return section; })) fail('CTA section not found');
-      console.log('[CTA] Initial selected tags: ' + JSON.stringify(tags()));
-      if (tags().length === 1 && same(tags()[0])) {
-        console.log('[CTA] Final selected tags: ' + JSON.stringify(tags()));
+      lastSelected = tags();
+      logStage('Read initial selected CTA tags');
+      const done = () => {
+        logStage('Verify final CTA selection');
+        const selected = tags();
+        if (selected.length !== 1 || !same(selected[0])) fail('CTA selection verification failed');
+        console.log('[CTA] Exactly one CTA verified: ' + requested);
         console.log('[CTA] Configuration completed');
         return true;
-      }
-      // Expand only if the associated select is not already editable.
-      if (!select) {
+      };
+      if (tags().length === 1 && same(tags()[0])) return done();
+      const ensureEditor = async () => {
+        refresh();
+        if (select) return;
+        logStage('Expand CTA editor');
         const editHost = deep(section, '[data-testid="lego-hybrid-section-item-operation"]')[0];
         const edit = editHost?.shadowRoot?.querySelector('button[part="base"]') ||
           deep(editHost, 'button[part="base"]')[0];
         if (!visible(edit) || !enabled(edit)) fail('CTA Edit control not found');
         click(edit);
-        console.log('[CTA] Edit section opened');
         if (!await wait(() => { refresh(); return select; })) fail('CTA select field not ready');
+      };
+      // Preserve every current tag until the requested CTA is verified selected.
+      if (!tags().some(same)) {
+        await ensureEditor();
+        const row = await searchRow(requested);
+        logStage('Select requested CTA: ' + requested);
+        const checkbox = deep(row, '[role="checkbox"]')[0];
+        if (checkbox?.getAttribute('aria-checked') !== 'true') click(row);
+        if (!await wait(() => {
+          refresh();
+          const current = findRow(requested);
+          const box = current && deep(current, '[role="checkbox"]')[0];
+          return tags().some(same) && (!current || box?.getAttribute('aria-checked') === 'true');
+        })) fail('Requested CTA tag did not appear after selection; existing tags were preserved');
+        logStage('Requested CTA verified before removing other tags');
       }
-      await open();
-      // Clear stale search before availability verification, never another page input.
-      let s = state();
-      if (s.search?.value) fillSearch(s.search, '');
-      if (!await wait(target)) {
-        s = state();
-        if (!s.rows.length || s.rows.some(row => !this.resolveCtaOptionLabel(row, select))) fail('Options not ready');
-        fail('Requested CTA not found in loaded results');
-      }
-      console.log('[CTA] Options ready before clear');
       refresh();
-      if (tags().length === 1 && same(tags()[0])) {
-        console.log('[CTA] Final selected tags: ' + JSON.stringify(tags()));
-        console.log('[CTA] Configuration completed');
-        return true;
-      }
-      if (tags().length) {
-        s = state();
-        if (!s.clear) fail('Clear All control not found');
-        click(s.clear);
-        clearClicked = true;
-        console.log('[CTA] Clear All clicked');
-        if (!await wait(() => { refresh(); return tags().length === 0; })) fail('Clear All did not update the field');
-        console.log('[CTA] Selections cleared');
-        // Give framework state changes time to finish before deciding to reopen.
-        await h.sleep(300);
-        if (!state().open) {
-          await open();
-          console.log('[CTA] Dropdown reopened after clear');
-        }
-      }
-      s = await wait(() => { const current = state(); return current.open && current.search ? current : null; });
-      if (!s) fail('CTA search input not found');
-      console.log('[CTA] Search input found');
-      if (s.search.value) fillSearch(s.search, '');
-      // Temporary No Data after clearing: bounded wait, then one scoped close/reopen.
-      if (!await wait(() => { const current = state(); return current.open && current.rows.length; }, 2000)) {
-        if (!clearClicked) fail('Options not ready');
-        s = state();
-        if (s.open) {
-          if (!s.trigger) fail('Dropdown arrow not found');
-          click(s.trigger);
-          if (!await wait(() => !state().open, 2000)) fail('Dropdown did not recover after clear');
-        }
-        await open();
-        s = await wait(() => { const current = state(); return current.open && current.search && current.rows.length ? current : null; });
-        if (!s) fail('Dropdown did not recover after clear');
-      }
-      s = state();
-      if (!s.search) fail('CTA search input not found');
-      console.log('[CTA] Searching for: ' + requested);
-      fillSearch(s.search, requested);
-      // Wait for filtering/rerender before reacquiring the exact result.
-      await h.sleep(500);
-      const row = await wait(target);
-      if (!row) {
-        s = state();
-        fail(s.rows.length ? 'Requested CTA not found in loaded results' : 'Search results not available');
-      }
-      console.log('[CTA] Matching CTA found');
-      const checkbox = deep(row, '[role="checkbox"]')[0];
-      if (checkbox?.getAttribute('aria-checked') !== 'true') click(row);
-      // Do not click again when the checkbox or field rerenders.
-      if (!await wait(() => {
+      const removalLimit = tags().length;
+      for (let removed = 0; removed < removalLimit; removed++) {
+        guard();
         refresh();
-        const selected = tags();
-        const current = target();
-        const box = current && deep(current, '[role="checkbox"]')[0];
-        return selected.length === 1 && same(selected[0]) &&
-          (!current || box?.getAttribute('aria-checked') === 'true');
-      })) fail('CTA selection verification failed');
-      console.log('[CTA] CTA selected: ' + requested);
-      console.log('[CTA] Final selected tags: ' + JSON.stringify(tags()));
-      console.log('[CTA] Configuration completed');
-      return true;
+        if (!tags().some(same)) fail('Requested CTA tag missing before individual removal');
+        const tag = tagNodes().find(node => {
+          const text = this.normalizeCtaText(node.textContent);
+          return text && !same(text) && !/^\+\s*\d+\s*more$/i.test(text) && text.toLowerCase() !== 'select';
+        });
+        if (!tag) return done();
+        const label = this.normalizeCtaText(tag.textContent);
+        const absent = () => {
+          refresh();
+          if (!tags().some(same)) fail('Requested CTA tag lost while removing ' + label);
+          return !tags().some(text => this.normalizeCtaText(text).toLowerCase() === label.toLowerCase());
+        };
+        logStage('Remove individual CTA tag: ' + label);
+        const close = deep(tag, '[part="closeIcon"][aria-label="Remove tag"]')[0] ||
+          deep(tag, '[part="closeIcon"]')[0];
+        let gone = false;
+        if (visible(close) && enabled(close)) {
+          click(close);
+          gone = !!await wait(absent, 3000);
+        }
+        if (!gone) {
+          logStage('Individual tag control unavailable or unchanged: ' + label + '; use scoped checkbox');
+          await ensureEditor();
+          if (absent()) continue;
+          const row = await searchRow(label);
+          refresh();
+          if (!tags().some(same)) fail('Requested CTA tag missing before checkbox deselection');
+          const box = deep(row, '[role="checkbox"]')[0];
+          if (box?.getAttribute('aria-checked') !== 'true') fail('Unwanted CTA tag and checkbox state disagree: ' + label);
+          click(row);
+          if (!await wait(absent)) fail('Individual CTA removal did not update the field: ' + label);
+        }
+        logStage('Individual CTA removed: ' + label);
+      }
+      return done();
     }
 
     /**
