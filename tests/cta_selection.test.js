@@ -93,7 +93,7 @@ const REAL_SLOT_NAMES = {
 function setup() {
   const document = new Node('#document'); document.body = document.appendChild(new Node('body'));
   global.document = document; global.Element = Node;
-  global.window = { location: { href: 'https://ads.tiktok.com/i18n/manage/campaign' }, getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }) };
+  global.window = { location: { href: 'https://ads.tiktok.com/i18n/manage/campaign', pathname: '/i18n/manage/campaign' }, getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }) };
   global.MouseEvent = function () {}; global.StorageService = null;
   global.AutomationRunner = { shouldAbort: false };
   for (const file of ['helpers', 'custom-mode', 'campaign', 'popup-handler']) {
@@ -140,10 +140,12 @@ function ctaFixture(env, opts = {}) {
     fullList = false,
     assignedMode = 'empty', // 'empty' | 'placeholder' | 'direct' — how the row slot resolves
     slotPrefix = 'slot-item-label-x9y8z7',
+    noTagClose = false, // tags lack [part=closeIcon] -> dropdown deselection fallback
+    rerenderAfterRemove = false, // simulate field rerender replacing remaining tag nodes
   } = opts;
   const options = fullList ? FULL_CTA_LIST : CTA_OPTIONS;
   const body = env.document.body;
-  const state = { clearClicks: 0, triggerClicks: 0, editClicks: 0, decoyClicks: 0, events: [] };
+  const state = { clearClicks: 0, triggerClicks: 0, editClicks: 0, decoyClicks: 0, events: [], tagCloseClicks: {} };
   const boxes = {}; const rows = {}; const tags = {}; const slotNames = {}; const hostLabelDivs = {};
   const checked = new Set([...preselected, ...hiddenSelected, ...offscreenSelected].filter(l => options.includes(l)));
 
@@ -176,16 +178,68 @@ function ctaFixture(env, opts = {}) {
 
   const selRoot = select.shadow();
   const valueField = selRoot.appendChild(new Node('ks-value-field-923'));
-  // Selected CTA tags: light-DOM ks-tag children of the value field.
-  for (const label of options) {
-    const tag = valueField.appendChild(new Node('ks-tag-923', { class: 'value-field__tagged__tag-item' }, label));
-    tag.visible = checked.has(label);
+
+  // REAL STRUCTURE: tags exist ONLY for selected CTAs. Label text lives in a
+  // light-DOM <span>; the close control lives in the tag's open shadowRoot:
+  //   div[part="base"] > div[part="closeIcon"][aria-label="Remove tag"]
+  const removeTagNode = (label) => {
+    const tag = tags[label];
+    if (!tag) return;
+    const idx = valueField.children.indexOf(tag);
+    if (idx >= 0) valueField.children.splice(idx, 1);
+    tag.visible = false;
+    delete tags[label];
+  };
+  const makeTag = (label, visible = true) => {
+    const tag = valueField.appendChild(new Node('ks-tag-923', { class: 'value-field__tagged__tag-item' }));
+    if (!noTagClose) {
+      const base = tag.shadow().appendChild(new Node('div', { part: 'base' }));
+      const closeIcon = base.appendChild(new Node('div', { part: 'closeIcon', role: 'button', 'aria-label': 'Remove tag' }));
+      closeIcon.onClick = () => {
+        state.events.push(`tag-remove:${label}`);
+        state.tagCloseClicks[label] = (state.tagCloseClicks[label] || 0) + 1;
+        setSelected(label, false);
+        if (rerenderAfterRemove) rerenderRemainingTags();
+      };
+    }
+    tag.appendChild(new Node('span', {}, label));
+    tag.visible = visible;
     tags[label] = tag;
+    return tag;
+  };
+  const setSelected = (label, on) => {
+    const box = boxes[label];
+    if (box) box.attrs['aria-checked'] = on ? 'true' : 'false';
+    if (on) {
+      if (!tags[label]) makeTag(label, true);
+      else tags[label].visible = true;
+    } else {
+      removeTagNode(label);
+    }
+    syncOverflow();
+  };
+  // Simulates TikTok rerendering the tagged field: remaining tag nodes are
+  // replaced, so any previously captured handles become stale.
+  const rerenderRemainingTags = () => {
+    for (const label of Object.keys(tags)) {
+      if (label === '+more') continue;
+      const wasVisible = tags[label].visible;
+      removeTagNode(label);
+      makeTag(label, wasVisible);
+    }
+  };
+  const syncOverflow = () => {
+    if (!tags['+more']) return;
+    const count = Object.keys(tags).filter(l => l !== '+more').length;
+    tags['+more'].visible = count > 1;
+  };
+  for (const label of [...preselected, ...hiddenSelected, ...offscreenSelected]) {
+    if (!options.includes(label) || tags[label]) continue;
+    makeTag(label, !hiddenSelected.includes(label) && !offscreenSelected.includes(label));
   }
   if (overflow) {
-    const more = valueField.appendChild(new Node('ks-tag-923', { class: 'value-field__tagged__tag-item' }, '+ 8 more'));
-    more.visible = checked.size > 0;
-    tags['+more'] = more;
+    tags['+more'] = valueField.appendChild(new Node('ks-tag-923', { class: 'value-field__tagged__tag-item' }, '+ 8 more'));
+    tags['+more'].visible = checked.size > 1;
   }
 
   const vfRoot = valueField.shadow();
@@ -216,10 +270,6 @@ function ctaFixture(env, opts = {}) {
   // A neutral outside click closes the open popover, as in the real UI.
   body.onClick = () => { dropdownMenu.visible = false; };
 
-  const syncOverflow = () => {
-    if (!tags['+more']) return;
-    tags['+more'].visible = options.filter(l => tags[l].visible).length > 1;
-  };
   let selectAllRow = null;
   const noDataNode = ul.appendChild(new Node('div', { class: 'dropdown-empty' }, 'No Data'));
 
@@ -245,15 +295,11 @@ function ctaFixture(env, opts = {}) {
       li.onClick = () => {
         state.events.push(`click:${label}`);
         const on = box.attrs['aria-checked'] === 'true';
-        box.attrs['aria-checked'] = on ? 'false' : 'true';
-        tags[label].visible = !on;
-        syncOverflow();
+        setSelected(label, !on);
         if (on && deselectClosesMenu) dropdownMenu.visible = false;
         if (!on && glitchDoubleCheck) {
           const other = options.find(l => l !== label);
-          boxes[other].attrs['aria-checked'] = 'true';
-          tags[other].visible = true;
-          syncOverflow();
+          setSelected(other, true);
         }
       };
       boxes[label] = box; rows[label] = li;
@@ -290,7 +336,7 @@ function ctaFixture(env, opts = {}) {
 }
 
 function visibleTags(fx, label) {
-  return fx.tags[label].visible;
+  return !!(fx.tags[label] && fx.tags[label].visible);
 }
 
 (async () => {
@@ -405,11 +451,61 @@ function visibleTags(fx, label) {
     assert.strictEqual(fx.rows['Watch now'].clicks, 0, 'target never re-clicked');
     assert.strictEqual(fx.state.clearClicks, 0);
     assert.strictEqual(fx.selectAllRow.clicks, 0);
-    assert.ok(logs.some(l => l.includes('[CTA] Requested CTA already selected: Watch now')), `logs: ${logs.join(' | ')}`);
-    assert.ok(logs.some(l => l.includes('[CTA] Exactly one selected CTA verified')), `logs: ${logs.join(' | ')}`);
+    assert.ok(logs.some(l => l.includes('[CTA] Current selected tags: ["Watch now"]')), `logs: ${logs.join(' | ')}`);
+    assert.ok(logs.some(l => l.includes('[CTA] Requested CTA already configured')), `logs: ${logs.join(' | ')}`);
+    assert.ok(logs.some(l => l.includes('[CTA] Exactly one CTA verified')), `logs: ${logs.join(' | ')}`);
     assert.ok(logs.some(l => l.includes('[CTA] No changes required')), `logs: ${logs.join(' | ')}`);
     const checked = fx.options.filter(l => fx.boxes[l].attrs['aria-checked'] === 'true');
     assert.deepStrictEqual(checked, ['Watch now']);
+  });
+
+  await test('Already-configured scenario never touches the dropdown locator', async env => {
+    // Explicit regression for the real browser case: the last HTML snapshot
+    // already had ["Watch now"] selected — the bot must succeed WITHOUT any
+    // option discovery, trigger click, or dropdown interaction.
+    const fx = ctaFixture(env, { preselected: ['Watch now'] });
+    const logs = await captureLogs(() => env.campaign.configureCallToAction('Watch now'));
+    assert.strictEqual(fx.state.triggerClicks, 0, 'dropdown trigger never clicked');
+    assert.strictEqual(fx.dropdownMenu.visible, false, 'dropdown never opened');
+    assert.strictEqual(fx.state.events.length, 0, 'no interaction events recorded');
+    assert.strictEqual(logs.some(l => l.includes('[CTA] Opening CTA dropdown')), false, 'dropdown locator never invoked');
+    assert.ok(logs.some(l => l.includes('[CTA] Requested CTA already configured')));
+  });
+
+  await test('Watch now among multiple tags: others removed via tag close controls only', async env => {
+    const fx = ctaFixture(env, { preselected: ['Experience now', 'Apply now', 'Watch now', 'Order now'] });
+    const logs = await captureLogs(() => env.campaign.configureCallToAction('Watch now'));
+    assert.strictEqual(fx.state.triggerClicks, 0, 'dropdown never needed when target is already selected');
+    for (const label of ['Experience now', 'Apply now', 'Order now']) {
+      assert.ok(fx.state.events.includes(`tag-remove:${label}`), `${label} removed via its close control; events: ${fx.state.events.join(', ')}`);
+      assert.strictEqual(fx.boxes[label].attrs['aria-checked'], 'false');
+      assert.strictEqual(visibleTags(fx, label), false);
+    }
+    assert.strictEqual(fx.rows['Watch now'].clicks, 0, 'target never clicked');
+    assert.strictEqual(fx.state.clearClicks, 0);
+    const checked = fx.options.filter(l => fx.boxes[l].attrs['aria-checked'] === 'true');
+    assert.deepStrictEqual(checked, ['Watch now']);
+    assert.ok(logs.some(l => l.includes('[CTA] Removed tag: Experience now')));
+  });
+
+  await test('Tag close controls unavailable: dropdown deselection is the verified fallback', async env => {
+    const fx = ctaFixture(env, { preselected: ['Experience now', 'Apply now'], noTagClose: true });
+    const logs = await captureLogs(() => env.campaign.configureCallToAction('Watch now'));
+    assert.strictEqual(fx.boxes['Watch now'].attrs['aria-checked'], 'true');
+    const checked = fx.options.filter(l => fx.boxes[l].attrs['aria-checked'] === 'true');
+    assert.deepStrictEqual(checked, ['Watch now']);
+    assert.ok(logs.some(l => l.includes('using dropdown deselection fallback')), `logs: ${logs.join(' | ')}`);
+    assert.ok(fx.state.triggerClicks >= 1, 'dropdown opened for the fallback');
+  });
+
+  await test('Stale DOM after tag removal: field reacquired and remaining tags stripped', async env => {
+    const fx = ctaFixture(env, { preselected: ['Experience now', 'Apply now', 'Watch now'], rerenderAfterRemove: true });
+    await env.campaign.configureCallToAction('Watch now');
+    assert.strictEqual(fx.boxes['Watch now'].attrs['aria-checked'], 'true');
+    const checked = fx.options.filter(l => fx.boxes[l].attrs['aria-checked'] === 'true');
+    assert.deepStrictEqual(checked, ['Watch now']);
+    assert.strictEqual(visibleTags(fx, 'Experience now'), false);
+    assert.strictEqual(visibleTags(fx, 'Apply now'), false);
   });
 
   // ---- 14+15. Order now requested while Watch now selected; target first ----
@@ -417,10 +513,10 @@ function visibleTags(fx, label) {
     const fx = ctaFixture(env, { preselected: ['Watch now'] });
     await env.campaign.configureCallToAction('Order now');
     const selectIdx = fx.state.events.indexOf('click:Order now');
-    const deselectIdx = fx.state.events.indexOf('click:Watch now');
+    const deselectIdx = fx.state.events.indexOf('tag-remove:Watch now');
     assert.ok(selectIdx !== -1, `events: ${fx.state.events.join(', ')}`);
     assert.ok(deselectIdx !== -1, `events: ${fx.state.events.join(', ')}`);
-    assert.ok(selectIdx < deselectIdx, 'target selected BEFORE the old CTA is deselected');
+    assert.ok(selectIdx < deselectIdx, 'target selected BEFORE the old CTA tag is removed');
     const checked = fx.options.filter(l => fx.boxes[l].attrs['aria-checked'] === 'true');
     assert.deepStrictEqual(checked, ['Order now'], 'exactly one selected CTA remains');
     assert.strictEqual(visibleTags(fx, 'Order now'), true);
@@ -433,6 +529,7 @@ function visibleTags(fx, label) {
     await env.campaign.configureCallToAction('Watch now');
     assert.strictEqual(fx.rows['Watch now'].clicks, 0, 'already-selected target must not be clicked');
     assert.strictEqual(fx.boxes['Watch now'].attrs['aria-checked'], 'true');
+    assert.strictEqual(fx.state.triggerClicks, 0, 'dropdown never opened; tags stripped via close controls');
     const checked = fx.options.filter(l => fx.boxes[l].attrs['aria-checked'] === 'true');
     assert.deepStrictEqual(checked, ['Watch now']);
   });
@@ -469,6 +566,7 @@ function visibleTags(fx, label) {
     assert.strictEqual(visibleTags(fx, 'Order now'), false);
     assert.strictEqual(fx.boxes['Experience now'].attrs['aria-checked'], 'false');
     assert.strictEqual(fx.boxes['Watch now'].attrs['aria-checked'], 'true');
+    assert.ok(fx.state.events.includes('tag-remove:Order now'), 'hidden overflow tag removed via close control');
   });
 
   await test('Hidden selected option is deselected too', async env => {
@@ -478,6 +576,7 @@ function visibleTags(fx, label) {
     assert.strictEqual(visibleTags(fx, 'Order now'), false);
     assert.strictEqual(fx.boxes['Experience now'].attrs['aria-checked'], 'false');
     assert.strictEqual(fx.boxes['Watch now'].attrs['aria-checked'], 'true');
+    assert.ok(fx.state.events.includes('tag-remove:Order now'), 'hidden tag found without visibility filtering');
   });
 
   // ---- 20. DOM rerender after each option click ----
@@ -490,7 +589,8 @@ function visibleTags(fx, label) {
   });
 
   await test('Dropdown closing after each deselect is recovered', async env => {
-    const fx = ctaFixture(env, { deselectClosesMenu: true });
+    // noTagClose forces the dropdown deselection path (fallback).
+    const fx = ctaFixture(env, { deselectClosesMenu: true, noTagClose: true });
     await env.campaign.configureCallToAction('Watch now');
     assert.ok(fx.state.triggerClicks >= 2, `dropdown reopened (trigger clicks: ${fx.state.triggerClicks})`);
     const checked = fx.options.filter(l => fx.boxes[l].attrs['aria-checked'] === 'true');
@@ -532,9 +632,22 @@ function visibleTags(fx, label) {
     assert.strictEqual(fx.boxes['Experience now'].attrs['aria-checked'], 'true', 'existing selection preserved');
     assert.strictEqual(visibleTags(fx, 'Experience now'), true);
     assert.strictEqual(fx.rows['Watch now'].clicks, 0, 'no option clicked on failure');
-    assert.ok(logs.some(l => l.includes('[CTA DEBUG] Available CTA labels:')), 'debug lists available labels');
-    assert.ok(logs.some(l => l.includes('[CTA DEBUG] Requested CTA matched: false')), 'debug names the miss');
+    assert.ok(logs.some(l => l.includes('[CTA DEBUG] URL: /i18n/manage/campaign')), 'debug reports pathname');
+    assert.ok(logs.some(l => l.includes('[CTA DEBUG] Resolved labels:')), 'debug lists resolved labels');
+    assert.ok(logs.some(l => l.includes('[CTA DEBUG] Exact match found: false')), 'debug names the miss');
     assert.ok(logs.some(l => l.includes('[CTA DEBUG] Menu rows found:')), 'debug reports row count');
+    assert.ok(logs.some(l => l.includes('[CTA DEBUG] Selected tags: ["Experience now"]')), 'debug lists selected tags');
+  });
+
+  await test('Zero-row failure is categorized as discovery, not unavailable', async env => {
+    const fx = ctaFixture(env, { preselected: [], noDataForever: true });
+    const logs = [];
+    const orig = console.log;
+    console.log = (...args) => { logs.push(args.join(' ')); };
+    try {
+      await assert.rejects(env.campaign.configureCallToAction('Watch now'), /discovery failed|No Data/);
+    } finally { console.log = orig; }
+    assert.ok(logs.some(l => l.includes('CTA dropdown discovery failed')), `categorized error; logs tail: ${logs.slice(-5).join(' | ')}`);
   });
 
   // ---- 23. Unexpected empty menu fails safely ----
