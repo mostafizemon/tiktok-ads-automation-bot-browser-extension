@@ -1270,7 +1270,11 @@
           }
         }
         const rect = dropdown?.getBoundingClientRect();
-        let reason = expanded === 'false' ? 'Editor collapsed' : hiddenContent ? 'Hidden/clipped ancestor' :
+        // The expanded attribute can remain false on an outer/stale container
+        // after the editable select is rendered. Actual visibility, connection,
+        // dimensions and the hit-test are authoritative for Location readiness.
+        const rendered = !hiddenContent && !transition && interactable(dropdown);
+        let reason = hiddenContent ? 'Hidden/clipped ancestor' :
           transition ? 'Collapse animation active' : !dropdown ? 'Location select absent' :
           !connected(dropdown) ? 'Location select disconnected' : !rect?.width || !rect?.height ? 'Location select has zero dimensions' :
           !interactable(dropdown) ? 'Location select hidden or disabled' : null;
@@ -1289,7 +1293,7 @@
           if (!valid) reason = 'Location select covered or outside viewport';
         }
         const ready = !reason;
-        if (expanded === 'true' || transition) opened = true;
+        if (expanded === 'true' || transition || rendered) opened = true;
         if ((previousPanel && panel && previousPanel !== panel) ||
             (previousHeading && heading && previousHeading !== heading) ||
             (previousDropdown && dropdown && previousDropdown !== dropdown)) { rerender = true; rerenderCount++; }
@@ -1297,8 +1301,9 @@
         if (heading) previousHeading = heading;
         if (dropdown) previousDropdown = dropdown;
         return { heading, panel, target, field, dropdown, ready, transition, expanded, rect, hiddenAncestor, reason, hit,
-          collapsed: !transition && (expanded === 'false' || (expanded !== 'true' && hiddenContent)),
-          state: ready ? 'ready' : transition ? 'transitioning' : expanded === 'false' ? 'collapsed' :
+          attributeMismatch: expanded === 'false' && rendered,
+          collapsed: !transition && !rendered && (expanded === 'false' || (expanded !== 'true' && hiddenContent)),
+          state: ready ? 'ready' : transition ? 'transitioning' : rendered ? 'rendered; waiting for interaction access' : expanded === 'false' ? 'collapsed' :
             expanded === 'true' ? 'expanded; waiting for dropdown' : hiddenContent ? 'collapsed content' : 'rendering / unknown' };
       };
       const log = (s, phase, error) => {
@@ -1324,6 +1329,7 @@
           rect: s.rect ? { left: s.rect.left, top: s.rect.top, width: s.rect.width, height: s.rect.height } : null,
           hiddenAncestor: s.hiddenAncestor, interactable: s.ready, rejectionReason: s.reason,
           hit: s.hit ? { tag: s.hit.tagName, role: s.hit.getAttribute?.('role') } : null,
+          attributeMismatch: s.attributeMismatch,
           rerenderCount, elapsedMs: Date.now() - start, requestedCountries, currentlySelected: currentTags };
         console.log('[LOCATION DEBUG] ' + JSON.stringify(failureSnapshot));
         // diagnostic() persists its action/verification through the existing log service.

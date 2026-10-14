@@ -401,5 +401,27 @@ async function test(name, fn) {
     await e.campaign.ensureDemographicsLocationReady(1000, ['Bangladesh']);
     assert.strictEqual(s.chevron.clicks, 0); assert.ok(s.dropdown);
   });
+  await test('Real diagnostic contradiction: expanded=false but visible live dropdown is ready', async e => {
+    const s = demographics(e, { expanded: true });
+    s.panel.attrs['data-lego-collapse-aria-expanded'] = 'false';
+    e.document.elementFromPoint = () => s.dropdown;
+    const logs = []; e.campaign.diag = (...args) => logs.push(args.join(' '));
+    await e.campaign.ensureCountryTargetingSectionOpen(12000, ['Bangladesh']);
+    assert.strictEqual(s.chevron.clicks, 0); assert.strictEqual(e.sleeps, 0);
+    assert.ok(logs.some(line => line.includes('"attributeMismatch":true')));
+  });
+  await test('Expansion click renders control while attribute stays false; no second toggle', async e => {
+    const s = demographics(e);
+    s.chevron.onClick = () => { s.open(); s.panel.attrs['data-lego-collapse-aria-expanded'] = 'false'; };
+    await e.campaign.ensureCountryTargetingSectionOpen();
+    assert.strictEqual(s.chevron.clicks, 1);
+  });
+  await test('False expanded attribute cannot cause retoggle when visible Location is covered', async e => {
+    const s = demographics(e, { expanded: true }); s.panel.attrs['data-lego-collapse-aria-expanded'] = 'false';
+    const overlay = e.document.body.appendChild(new Node('div', { role: 'dialog' }));
+    e.document.elementFromPoint = () => overlay;
+    await assert.rejects(e.campaign.ensureCountryTargetingSectionOpen(1000), /Demographics Locations dropdown/);
+    assert.strictEqual(s.chevron.clicks, 0);
+  });
   console.log(`AUDIENCE CONTROLS TEST RESULTS: ${passed} PASSED, ${failed} FAILED`); if (failed) process.exitCode = 1;
 })();
