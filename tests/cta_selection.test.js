@@ -364,6 +364,19 @@ function visibleTags(fx, label) {
     assert.strictEqual(fx.clearBtn.clicks, 0, 'Clear All cross untouched');
   });
 
+  await test('Real slotted field trigger and spinner light-DOM rows are discovered', async env => {
+    const fx = ctaFixture(env, { preselected: ['Experience now'], fullList: true });
+    // Captured browser variant: value field is a light-DOM child of ks-select,
+    // while option rows are projected as spinner-host light-DOM children.
+    const valueField = fx.select.shadowRoot.children.find(node => node.tagName === 'KS-VALUE-FIELD-923');
+    fx.select.shadowRoot.children = fx.select.shadowRoot.children.filter(node => node !== valueField);
+    fx.select.appendChild(valueField);
+    const labels = await captureLogs(() => env.campaign.configureCallToAction('Watch now'));
+    assert.ok(fx.state.events.includes('trigger'), 'slotted value field trigger clicked');
+    assert.ok(fx.state.events.includes('click:Watch now'), 'spinner light-DOM row clicked');
+    assert.ok(labels.some(line => line.includes('CTA options loaded')));
+  });
+
   await test('Root ID missing but heading exists; Order now selected', async env => {
     const fx = ctaFixture(env, { removeIdUpfront: true });
     await env.campaign.configureCallToAction('Order now');

@@ -2147,9 +2147,14 @@
       const isSelectAllRow = (text) => /^\s*select\s+all\s*$/i.test(text || '');
       const resolveDropdownTrigger = (selectHost) => {
         try {
-          const valueField = selectHost?.shadowRoot?.querySelector('ks-value-field-923') ||
-            h.queryShadow('ks-value-field-923', selectHost);
-          const inner = valueField?.shadowRoot?.querySelector('[part="base"], button[part="base"], [role="combobox"], button');
+          // TikTok may render the slotted value field in the select host's
+          // light DOM. Search both composed sides, then enter the field's own
+          // shadow root for its actual clickable base.
+          const valueField = selectHost?.querySelector?.('ks-value-field-923, [part="field"]') ||
+            selectHost?.shadowRoot?.querySelector('ks-value-field-923, [part="field"]') ||
+            h.queryShadow('ks-value-field-923, [part="field"]', selectHost);
+          const inner = valueField?.shadowRoot?.querySelector('[part="base"], button[part="base"], [role="combobox"], button') ||
+            (valueField && h.queryShadow('[part="base"], button[part="base"], [role="combobox"], button', valueField));
           if (inner) return inner;
         } catch (_) {}
         try {
@@ -2157,6 +2162,16 @@
           if (direct) return direct;
         } catch (_) {}
         return selectHost;
+      };
+      const ctaStructuralState = (selectHost) => {
+        const shadow = !!selectHost?.shadowRoot;
+        const dropdown = selectHost?.shadowRoot?.querySelector('[part="dropdown"], ks-dropdown-menu-923') || null;
+        const popover = dropdown?.shadowRoot?.querySelector('ks-popover-923, [class*="popover"]') || null;
+        const list = popover?.querySelector('ks-dropdown-menu-list-923, [class*="dropdown-menu__body-content"] ks-dropdown-menu-list-923') || null;
+        const spinner = list?.shadowRoot?.querySelector('ks-spinner-923, [class*="spinner"]') || null;
+        const lightRows = spinner?.querySelectorAll?.('li.dropdown-item, li.menu-item-base, [role="option"]') || [];
+        const shadowRows = spinner?.shadowRoot?.querySelectorAll?.('li.dropdown-item, li.menu-item-base, [role="option"]') || [];
+        return { shadow, dropdown, popover, list, spinner, lightRows: lightRows.length, shadowRows: shadowRows.length };
       };
       const snapshotMenus = () => h.queryShadowAll(
         'ks-dropdown-menu-923, ks-dropdown-menu-list-923, [role="listbox"], ul[class*="menu"], li.dropdown-item, li.menu-item-base, [role="option"]'
@@ -2181,6 +2196,11 @@
           }
           if (menu.shadowRoot?.querySelectorAll) {
             pushAll(Array.from(menu.shadowRoot.querySelectorAll('li, [role="option"]')));
+          }
+          // ks-spinner-923 projects its list through a slot: rows are light
+          // DOM children of the spinner host, not its shadow root.
+          if (menu.matches?.('ks-spinner-923') || menu.tagName?.toLowerCase().startsWith('ks-spinner-')) {
+            pushAll(Array.from(menu.querySelectorAll('li.dropdown-item, li.menu-item-base, [role="option"]')));
           }
         }
         pushAll(h.queryShadowAll('li.dropdown-item, li.menu-item-base, [role="option"]'));
@@ -2243,7 +2263,14 @@
         const freshSelect = (freshSection && this.findCtaSelectInSection(freshSection)) || ctaSelectHost;
         if (freshSection) ctaSection = freshSection;
         if (freshSelect) ctaSelectHost = freshSelect;
-        h.safeClick(resolveDropdownTrigger(ctaSelectHost), 'CTA dropdown trigger');
+        const trigger = resolveDropdownTrigger(ctaSelectHost);
+        if (!trigger || !isVisibleCta(trigger)) {
+          console.log('[CTA DEBUG] Dropdown trigger found: false');
+          throw new Error('[CTA ERROR] Dropdown trigger not found');
+        }
+        console.log('[CTA DEBUG] Dropdown trigger found: true');
+        h.safeClick(trigger, 'CTA dropdown trigger');
+        console.log('[CTA DEBUG] Trigger clicked: true');
         await h.sleep(700);
         menus = snapshotMenus().filter(el => !before.has(el));
         if (menus.length === 0) menus = snapshotMenus();
@@ -2288,8 +2315,17 @@
           console.log(`[CTA DEBUG] URL: ${pathname}`);
           console.log(`[CTA DEBUG] CTA section found: ${!!ctaSection}`);
           console.log(`[CTA DEBUG] CTA select found: ${!!ctaSelectHost}`);
+          const structure = ctaStructuralState(ctaSelectHost);
+          console.log(`[CTA DEBUG] Select shadowRoot available: ${structure.shadow}`);
+          console.log(`[CTA DEBUG] Dropdown host found: ${!!structure.dropdown}`);
+          console.log(`[CTA DEBUG] Popover host found: ${!!structure.popover}`);
+          console.log(`[CTA DEBUG] Dropdown list host found: ${!!structure.list}`);
+          console.log(`[CTA DEBUG] Spinner host found: ${!!structure.spinner}`);
+          console.log(`[CTA DEBUG] Spinner light DOM row count: ${structure.lightRows}`);
+          console.log(`[CTA DEBUG] Spinner shadow DOM row count: ${structure.shadowRows}`);
           console.log(`[CTA DEBUG] Selected tags: ${JSON.stringify(readTagLabels(ctaSection))}`);
           console.log(`[CTA DEBUG] Dropdown open: ${snapshotMenus().length > 0}`);
+          console.log(`[CTA DEBUG] Total CTA option rows: ${items.length}`);
           console.log(`[CTA DEBUG] Menu rows found: ${items.length}`);
           console.log(`[CTA DEBUG] Resolved labels: [${labels.join(', ')}]`);
           console.log(`[CTA DEBUG] Unresolved slot names: [${unresolvedSlots.join(', ')}]`);
