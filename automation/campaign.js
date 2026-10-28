@@ -1629,7 +1629,8 @@
         for (let ancestor = node; ancestor; ancestor = ancestor.assignedSlot || ancestor.parentElement || ancestor.getRootNode?.().host) {
           if (!ancestor.tagName || ancestor.tagName.startsWith('#')) continue;
           const style = window.getComputedStyle(ancestor);
-          if (ancestor.hasAttribute?.('hidden') || style.display === 'none' || style.visibility === 'hidden' ||
+          if (ancestor.hasAttribute?.('hidden') || ancestor.getAttribute?.('aria-hidden') === 'true' ||
+              style.display === 'none' || style.visibility === 'hidden' ||
               style.opacity === '0' || (style.height === '0px' && /hidden|clip/.test(style.overflow || ''))) return false;
         }
         return true;
@@ -1642,14 +1643,18 @@
         // Removed tags can remain mounted but hidden during TikTok rerenders.
         const tags = h.queryShadowAll('[data-testid="lego-tag-list-tag"]', field).filter(rendered);
         if (!rendered(trigger) && !tags.length) continue;
-        const selected = tags.map(tag => (tag.textContent || '').replace(/\s+/g, ' ').trim());
+        const selected = tags.map(tag => (tag.innerText || tag.textContent || '').replace(/\s+/g, ' ').trim());
         const restricted = !!trigger && (trigger.disabled === true || trigger.getAttribute('aria-disabled') === 'true' ||
           trigger.classList.contains('is-disabled') || (trigger.hasAttribute('disabled') && trigger.getAttribute('disabled') !== 'false'));
+        const inActiveSection = typeof field.closest === 'function' &&
+          !!field.closest('[data-lego-collapse-aria-expanded="true"], #section_dom_id_targetingDemographics, [id*="targetingDemographics"]');
         candidates.push({ field, trigger, tags, ready: rendered(trigger) && !restricted, restricted, selected,
-          reliable: tags.length > 0 && selected.every(Boolean) });
+          reliable: tags.length > 0 && selected.every(Boolean), inActiveSection });
       }
-      // Prefer the live editable replacement over an obsolete field's tags.
-      return candidates.find(state => state.ready) || candidates[0] || null;
+      // Prefer active editable section candidates, and prefer ready candidates
+      const activeCandidates = candidates.filter(c => c.inActiveSection);
+      const pool = activeCandidates.length > 0 ? activeCandidates : candidates;
+      return pool.find(state => state.ready) || candidates.find(state => state.ready) || pool[0] || candidates[0] || null;
     }
 
     locationSelectionMatches(state, requested) {
@@ -1848,16 +1853,22 @@
         guard();
         this.diag(stepName, 'Removing unwanted country: ' + countryName);
         h.safeClick(target, 'Remove country ' + countryName);
-        const removalDeadline = Math.min(deadline, Date.now() + 12000);
+        const removalDeadline = Math.min(deadline, Date.now() + 20000);
         let removed = false;
         let absentSince = null;
         while (Date.now() < removalDeadline) {
           guard();
           const live = this.readLiveLocationField();
-          if (live?.ready && !live.selected.some(name => normalize(name) === normalize(countryName))) {
-            if (absentSince === null) absentSince = Date.now();
-            if (Date.now() - absentSince >= 400) { removed = true; break; }
-          } else absentSince = null;
+          const tagGone = !tag || tag.isConnected === false || !h.isVisible(tag);
+          const nameAbsent = !live?.selected || !live.selected.some(name => normalize(name) === normalize(countryName));
+          if (tagGone && nameAbsent) {
+            if (live?.ready) {
+              if (absentSince === null) absentSince = Date.now();
+              if (Date.now() - absentSince >= 300) { removed = true; break; }
+            }
+          } else {
+            absentSince = null;
+          }
           await h.sleep(200);
         }
         if (!removed) throw new Error('[LOCATION] Could not verify removal of "' + countryName + '". New country selection stopped.');
