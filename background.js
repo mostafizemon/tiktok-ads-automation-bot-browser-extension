@@ -129,6 +129,8 @@ async function ensureContentScriptInjected(tabId) {
           'automation/popup-handler.js',
           'automation/custom-mode.js',
           'automation/campaign.js',
+          'automation/account-link.js',
+          'automation/ad-text.js',
           'automation/runner.js',
           'content.js'
         ]

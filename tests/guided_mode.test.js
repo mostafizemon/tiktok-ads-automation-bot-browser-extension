@@ -114,6 +114,36 @@ function guided(env, { suffix = '6xhh7t2y', delay = 0, assigned = false, close =
   return state;
 }
 
+// Mirrors the supplied ks-button-1-1-1o markup: base button, nested tooltip,
+// pre-mounted modal and light-DOM footer overriding default Cancel / Confirm.
+function currentGuided(env) {
+  const host = env.document.body.appendChild(new Node('ks-button-1-1-1o', { class: 'KsButton' }, 'Exit guided mode'));
+  const inner = host.shadow().appendChild(new Node('button', { part: 'base' }));
+  inner.appendChild(new Node('slot'));
+  const tooltip = host.appendChild(new Node('ks-tooltip-1-1-1o'));
+  tooltip.appendChild(new Node('div', { slot: 'content' }, "You're in a guided setup designed for new advertisers. Learn more"));
+  // Exercise native text-node traversal as well as the fixture's textContent.
+  host.childNodes = [{ nodeType: 3, textContent: 'Exit guided mode' }, tooltip];
+  const modal = env.document.body.appendChild(new Node('ks-modal-1-1-1o', { class: 'KsModal' }));
+  modal.visible = false;
+  const wrapper = modal.shadow().appendChild(new Node('div', { part: 'wrapper', class: 'modal__wrapper' }));
+  const header = wrapper.appendChild(new Node('div', { class: 'modal__header-title' }));
+  header.appendChild(new Node('slot', { name: 'title' }, 'Are you sure you want to exit?'));
+  const defaultFooter = wrapper.appendChild(new Node('div', { part: 'footer' }));
+  const footerSlot = defaultFooter.appendChild(new Node('slot', { name: 'footer' }));
+  const fallback = footerSlot.appendChild(new Node('button', {}, 'Confirm'));
+  const footer = modal.appendChild(new Node('div', { slot: 'footer' }));
+  footer.assignedSlot = footerSlot;
+  footerSlot.assignedElements = () => [footer];
+  const exitHost = footer.appendChild(new Node('ks-button-1-1-1o', {}, 'Exit'));
+  const exit = exitHost.shadow().appendChild(new Node('button', { part: 'base' }));
+  const stayHost = footer.appendChild(new Node('ks-button-1-1-1o', {}, 'Stay'));
+  const stay = stayHost.shadow().appendChild(new Node('button', { part: 'base' }));
+  inner.onClick = () => { modal.visible = true; };
+  exit.onClick = () => { modal.visible = false; host.visible = false; env.normal(); };
+  return { host, inner, modal, exit, stay, fallback, header, footer };
+}
+
 function fullVersion(env, {
   suffix = 'pz4ceaj9',
   modalSuffix = 'zskw9xpt',
@@ -476,6 +506,54 @@ function customMode(env, {
     catch (error) { failed++; console.error(`FAIL: ${name}`, error.stack); }
     finally { Date.now = realNow; }
   }
+  await test('Current base-part guided button ignores tooltip and exits through slotted footer once', async env => {
+    const state = currentGuided(env);
+    const unrelated = env.document.body.appendChild(new Node('button', {}, 'Exit'));
+    env.normal(); // Guided action must take priority even with Traffic already mounted.
+    assert.strictEqual(env.handler.findGuidedModeHost(), state.host);
+    await env.campaign.handleCustomModeFlow();
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+    assert.strictEqual(state.host.clicks, 0);
+    assert.strictEqual(state.stay.clicks, 0);
+    assert.strictEqual(state.fallback.clicks, 0);
+    assert.strictEqual(unrelated.clicks, 0);
+  });
+  await test('Display-contents modal resolves assigned footer from visible shadow wrapper', async env => {
+    const state = currentGuided(env);
+    // Real custom-element hosts can have no layout box while their shadow
+    // wrapper and slotted footer buttons are visibly rendered.
+    state.modal.getBoundingClientRect = () => ({ width: 0, height: 0 });
+    await env.handler.ensureCustomMode(2000);
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+    assert.strictEqual(state.stay.clicks, 0);
+    assert.strictEqual(state.fallback.clicks, 0);
+  });
+  await test('Current guided mode waits for enabled footer Exit without repeating initial click', async env => {
+    const state = currentGuided(env);
+    state.exit.attrs.disabled = '';
+    env.later(750, () => delete state.exit.attrs.disabled);
+    await env.handler.ensureCustomMode(2000);
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 1);
+    assert.strictEqual(state.stay.clicks, 0);
+  });
+  await test('Current guided mode ignores footer Exit under unrelated modal title', async env => {
+    const state = currentGuided(env);
+    state.header.children[0].text = 'Delete campaign?';
+    await assert.rejects(env.handler.ensureCustomMode(1000), /Exit confirmation popup/);
+    assert.strictEqual(state.inner.clicks, 1);
+    assert.strictEqual(state.exit.clicks, 0);
+    assert.strictEqual(state.stay.clicks, 0);
+  });
+  await test('Disabled current base-part guided button is never clicked', async env => {
+    const state = currentGuided(env);
+    state.inner.attrs.disabled = '';
+    assert.strictEqual(env.handler.findGuidedModeHost(), null);
+    await assert.rejects(env.handler.ensureCustomMode(1000), /Neither Guided Mode/);
+    assert.strictEqual(state.inner.clicks, 0);
+  });
   for (const suffix of ['6xhh7t2y', 'new-session-2026']) {
     await test(`Create -> Guided Mode -> shadow Exit -> slot Exit -> normal (${suffix})`, async env => {
       let state;

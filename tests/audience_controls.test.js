@@ -121,6 +121,80 @@ async function test(name, fn) {
   finally { Date.now = old; }
 }
 (async () => {
+  await test('Removed country retained as hidden DOM tag does not fail cleanup', async e => {
+    const s = demographics(e, { expanded: true });
+    const tag = s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    const close = tag.shadow().appendChild(new Node('button', { part: 'closeIcon' }));
+    close.onClick = () => { tag.visible = false; };
+    await e.campaign.cleanupUnwantedCountryTags(['Bangladesh']);
+    assert.strictEqual(close.clicks, 1);
+    assert.deepStrictEqual(e.campaign.readLiveLocationField().selected, []);
+    s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'Bangladesh'));
+    await e.campaign.verifyFinalCountryTags(['Bangladesh']);
+  });
+  await test('Removal waits for delayed empty-field readiness rather than treating it as failure', async e => {
+    const s = demographics(e, { expanded: true });
+    const tag = s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    const close = tag.shadow().appendChild(new Node('button', { part: 'closeIcon' }));
+    close.onClick = () => {
+      tag.visible = false; s.dropdown.attrs['aria-disabled'] = 'true';
+      e.later(6000, () => delete s.dropdown.attrs['aria-disabled']);
+    };
+    await e.campaign.cleanupUnwantedCountryTags(['Bangladesh']);
+    assert.strictEqual(close.clicks, 1);
+    assert.deepStrictEqual(e.campaign.readLiveLocationField().selected, []);
+  });
+  await test('Live empty replacement beats obsolete field with old visible country tag', async e => {
+    const s = demographics(e, { expanded: true });
+    s.dropdown.visible = false;
+    s.field.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    const live = s.content.appendChild(new Node('div', { id: 'fieldRenderer-particleLocations' }));
+    live.appendChild(new Node('div', { 'data-testid': 'lego-antd-select' }));
+    await e.campaign.cleanupUnwantedCountryTags(['Bangladesh']);
+    assert.strictEqual(e.campaign.readLiveLocationField().field, live);
+    assert.deepStrictEqual(e.campaign.readLiveLocationField().selected, []);
+  });
+  await test('Missing country remove action blocks new selection and Continue', async e => {
+    const s = demographics(e, { expanded: true });
+    s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    let selected = false;
+    e.campaign.selectTargetCountriesViaDropdown = async () => { selected = true; };
+    await assert.rejects(e.campaign.configureDemographicsAndCountries({ targetCountries: ['Bangladesh'] }), /Remove button unavailable/);
+    assert.strictEqual(selected, false);
+  });
+  await test('Unresponsive remove stops before selecting a new country', async e => {
+    const s = demographics(e, { expanded: true });
+    const tag = s.dropdown.appendChild(new Node('ks-tag-923', { 'data-testid': 'lego-tag-list-tag' }, 'United States'));
+    const close = tag.shadow().appendChild(new Node('button', { part: 'closeIcon' }));
+    let selected = false;
+    e.campaign.selectTargetCountriesViaDropdown = async () => { selected = true; };
+    await assert.rejects(e.campaign.configureDemographicsAndCountries({ targetCountries: ['Bangladesh'] }), /Could not verify removal/);
+    assert.strictEqual(selected, false); assert.strictEqual(close.clicks, 1);
+  });
+  await test('Nested remove buttons and delayed rerender remove all defaults before adding country', async e => {
+    const s = demographics(e, { expanded: true });
+    const clicks = [];
+    const render = names => {
+      for (const child of s.dropdown.children) child.visible = false;
+      s.dropdown.children = [];
+      for (const name of names) {
+        const tag = s.dropdown.appendChild(new Node('ks-tag-new', { 'data-testid': 'lego-tag-list-tag' }, name));
+        const wrapper = tag.shadow().appendChild(new Node('ks-wrapper'));
+        const closeHost = wrapper.shadow().appendChild(new Node('ks-icon-button-new', { part: 'closeIcon' }));
+        const close = closeHost.shadow().appendChild(new Node('button', { part: 'base' }));
+        close.onClick = () => { clicks.push(name); e.later(800, () => render(names.filter(value => value !== name))); };
+      }
+    };
+    render(['United States', 'Canada', 'Bangladesh']);
+    e.campaign.selectTargetCountriesViaDropdown = async () => {
+      assert.deepStrictEqual(e.campaign.readLiveLocationField().selected, ['Bangladesh']);
+    };
+    e.campaign.closeLocationDropdown = async () => {};
+    e.campaign.clickCommonNextButton = async () => {};
+    e.campaign.verifyNavigationToNextPage = async () => {};
+    await e.campaign.configureDemographicsAndCountries({ targetCountries: ['Bangladesh'] });
+    assert.deepStrictEqual(clicks, ['United States', 'Canada']);
+  });
   await test('Budget Continue waits for dynamic inner button to enable then verifies navigation', async e => {
     const host = e.document.body.appendChild(new Node('ks-button-newbuild', {}, 'Continue'));
     const button = host.shadow().appendChild(new Node('button', { part: 'base', disabled: '' }));

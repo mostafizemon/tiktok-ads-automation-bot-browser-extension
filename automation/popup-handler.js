@@ -393,6 +393,11 @@
         };
       }
 
+      if (text.includes('link tiktok account') || text.includes('link existing tiktok account') ||
+          text.includes('link with qr code')) {
+        return { type: POPUP_TYPES.WORKFLOW_CRITICAL, reason: 'TikTok account linking workflow' };
+      }
+
       // 1. Workflow-critical dialogs (MUST NOT BE AUTO-DISMISSED)
       // Custom mode Stay/Exit confirmation
       if (text.includes('custom mode') || (text.includes('stay') && text.includes('exit'))) {

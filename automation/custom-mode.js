@@ -102,6 +102,23 @@
       return (element?.innerText || element?.textContent || '').replace(/\s+/g, ' ').trim();
     }
 
+    // The action label excludes tooltip/help content slotted inside the host.
+    modeActionText(element) {
+      const read = node => {
+        if (!node) return '';
+        if (node.nodeType === 3) return node.textContent || '';
+        if (node.tagName?.toLowerCase().startsWith('ks-tooltip-') ||
+            node.getAttribute?.('slot') === 'content' || node.tagName?.toLowerCase() === 'template') return '';
+        if (node.childNodes) return Array.from(node.childNodes).map(read).join(' ');
+        return (node.text || '') + ' ' + Array.from(node.children || []).map(read).join(' ');
+      };
+      return read(element).replace(/\s+/g, ' ').trim();
+    }
+
+    modeActionButton(host) {
+      return host?.shadowRoot?.querySelector('button[part="self"], button[part="base"]');
+    }
+
     queryOpen(selector, root = document) {
       const h = global.AutomationHelpers;
       return [...new Set([
@@ -163,15 +180,16 @@
     findGuidedModeHost(text = 'Exit guided mode') {
       const candidates = this.queryOpen('*').filter(host =>
         (host.tagName?.toLowerCase().startsWith('ks-button-') || host.hasAttribute?.('ks-button')) &&
-        this.normalizedText(host) === text && this.isEnabledAction(host) &&
-        this.isEnabledAction(host.shadowRoot?.querySelector('button[part="self"]'))
+        this.modeActionText(host) === text && this.isEnabledAction(host) &&
+        this.isEnabledAction(this.modeActionButton(host))
       );
       if (candidates.length > 1) throw new Error(`[ONBOARDING] Multiple ${text} buttons found; refusing ambiguous action.`);
       return candidates[0] || null;
     }
 
     visibleDialogs() {
-      return this.queryOpen('[role="dialog"], [aria-modal="true"], [part="wrapper"], .byted-modal, .arco-modal, [class*="modal"], [ks-modal], [class*="modal-content"]')
+      return [...new Set([...this.queryOpen('[role="dialog"], [aria-modal="true"], [part="wrapper"], .byted-modal, .arco-modal, [class*="modal"], [ks-modal], [class*="modal-content"]'),
+        ...this.queryOpen('*').filter(node => node.tagName?.toLowerCase().startsWith('ks-modal-'))])]
         .filter(dialog => global.AutomationHelpers.isVisible(dialog));
     }
 
@@ -486,6 +504,29 @@
           }
         }
       }
+      // Current TikTok uses a light-DOM slot="footer" with Exit / Stay hosts.
+      // Only accept that layout inside the specifically identified exit modal.
+      if (this.isModalHeaderMatching(dialog, 'Are you sure you want to exit?')) {
+        // querySelector cannot follow a shadow slot to its light-DOM content.
+        // Resolve from the visible wrapper too: the ks-modal host itself may
+        // use display: contents and have no bounding box.
+        const footers = new Set(this.queryOpen('[slot="footer"]', dialog));
+        for (const slot of this.queryOpen('slot[name="footer"]', dialog)) {
+          for (const assigned of slot.assignedElements?.({ flatten: true }) || []) {
+            if (this.isWithin(assigned, dialog)) footers.add(assigned);
+          }
+        }
+        for (const footer of footers) {
+          for (const host of this.queryOpen('*', footer)) {
+            if (!host.tagName?.toLowerCase().startsWith('ks-button-') ||
+                this.modeActionText(host) !== 'Exit') continue;
+            const button = this.modeActionButton(host);
+            if (this.isWithin(host, dialog) && this.isEnabledAction(host) && this.isEnabledAction(button)) {
+              actions.add(button);
+            }
+          }
+        }
+      }
       if (actions.size > 1) throw new Error('[GUIDED MODE] Multiple popup Exit actions found; refusing ambiguous action.');
       return [...actions][0] || null;
     }
@@ -525,7 +566,7 @@
 
       if (!transition.clickedSwitch) {
         const activeHost = this.findGuidedModeHost('Switch to full version') || host;
-        const button = activeHost?.shadowRoot?.querySelector('button[part="self"]');
+        const button = this.modeActionButton(activeHost);
 
         this.checkAbort();
         if (!activeHost || !button || !this.isEnabledAction(activeHost) || !this.isEnabledAction(button)) {
@@ -723,15 +764,15 @@
     }
 
     async exitGuidedMode(host, timeoutMs) {
-      if (this.normalizedText(host) === 'Switch to full version' || this.guidedTransition?.fullVersion) {
+      if (this.modeActionText(host) === 'Switch to full version' || this.guidedTransition?.fullVersion) {
         return this.handleSwitchToFullVersion(host, timeoutMs);
       }
-      if (this.normalizedText(host) === 'Switch to custom mode' || this.guidedTransition?.customMode) {
+      if (this.modeActionText(host) === 'Switch to custom mode' || this.guidedTransition?.customMode) {
         return this.handleSwitchToCustomMode(host, timeoutMs);
       }
       let transition = this.guidedTransition;
       if (!transition || transition.host !== host) {
-        const button = host.shadowRoot?.querySelector('button[part="self"]');
+        const button = this.modeActionButton(host);
         this.checkAbort();
         if (!this.isEnabledAction(host) || !this.isEnabledAction(button)) {
           throw new Error('[ONBOARDING] Mode-switch button became unavailable before clicking.');

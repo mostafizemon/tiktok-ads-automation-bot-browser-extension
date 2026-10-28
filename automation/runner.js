@@ -719,7 +719,15 @@
         await h.sleep(1500);
         }
 
-        // Configure CTA after attaching the video; a recovery resumes here only.
+        if (global.AccountLinkAutomation) {
+          await global.AccountLinkAutomation.prepareQrLink();
+        }
+
+        if (global.AdTextAutomation) {
+          await global.AdTextAutomation.configure({ resume: resumeCta });
+        }
+
+        // Configure CTA after identity linking and verified AI ad text.
         if (this.shouldAbort || h.isAborted()) return { success: false, aborted: true, error: 'Aborted' };
         if (config.callToAction && String(config.callToAction).trim()) {
           await this.storage?.updateJobState({ currentStep: WORKFLOW_STEPS.CONFIGURE_CTA,

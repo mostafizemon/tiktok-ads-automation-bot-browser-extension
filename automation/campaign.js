@@ -1635,17 +1635,21 @@
         return true;
       };
       const fields = h.queryShadowAll('#fieldRenderer-particleLocations, [data-testid="fieldRenderer-particleLocations"]');
+      const candidates = [];
       for (const field of fields) {
-        const trigger = h.queryShadow('[data-testid="lego-antd-select"]', field);
-        const tags = h.queryShadowAll('[data-testid="lego-tag-list-tag"]', field);
-        if (!rendered(trigger) && !tags.some(rendered)) continue;
+        const triggers = h.queryShadowAll('[data-testid="lego-antd-select"]', field);
+        const trigger = triggers.find(rendered) || triggers[0];
+        // Removed tags can remain mounted but hidden during TikTok rerenders.
+        const tags = h.queryShadowAll('[data-testid="lego-tag-list-tag"]', field).filter(rendered);
+        if (!rendered(trigger) && !tags.length) continue;
         const selected = tags.map(tag => (tag.textContent || '').replace(/\s+/g, ' ').trim());
         const restricted = !!trigger && (trigger.disabled === true || trigger.getAttribute('aria-disabled') === 'true' ||
           trigger.classList.contains('is-disabled') || (trigger.hasAttribute('disabled') && trigger.getAttribute('disabled') !== 'false'));
-        return { field, trigger, ready: rendered(trigger) && !restricted, restricted, selected,
-          reliable: tags.length > 0 && tags.every(tag => rendered(tag)) && selected.every(Boolean) };
+        candidates.push({ field, trigger, tags, ready: rendered(trigger) && !restricted, restricted, selected,
+          reliable: tags.length > 0 && selected.every(Boolean) });
       }
-      return null;
+      // Prefer the live editable replacement over an obsolete field's tags.
+      return candidates.find(state => state.ready) || candidates[0] || null;
     }
 
     locationSelectionMatches(state, requested) {
@@ -1813,39 +1817,52 @@
     async cleanupUnwantedCountryTags(targetCountries) {
       const h = this.helpers;
       const stepName = 'CLEANUP_COUNTRY_TAGS';
-      const normalizedTargets = targetCountries.map(c => c.trim().toLowerCase());
-
-      const field = this.readLiveLocationField()?.field;
-      const existingTags = field ? h.queryShadowAll('[data-testid="lego-tag-list-tag"]', field) : [];
-      this.diag(stepName, `Found ${existingTags.length} existing country tag(s)`);
-
-      for (const tag of existingTags) {
-        if (!h.isVisible(tag)) continue;
-        const countryName = (tag.innerText || tag.textContent || '').trim();
-        const lowerName = countryName.toLowerCase();
-
-        if (normalizedTargets.includes(lowerName)) {
-          this.diag(stepName, `Retaining already-selected country tag: ${countryName}`, {
-            verification: 'Tag matches configuration'
-          });
-        } else {
-          this.diag(stepName, `Removing unwanted country tag: ${countryName}`);
-          let closeBtn = null;
-          if (tag.shadowRoot) {
-            closeBtn = tag.shadowRoot.querySelector('[part="closeIcon"][aria-label="Remove tag"]') ||
-                       tag.shadowRoot.querySelector('[part="closeIcon"]') ||
-                       tag.shadowRoot.querySelector('[aria-label*="Remove"]');
-          }
-          if (!closeBtn) {
-            closeBtn = tag.querySelector('[part="closeIcon"][aria-label="Remove tag"], [part="closeIcon"], [aria-label*="Remove"], [class*="close"]');
-          }
-
-          if (closeBtn) {
-            h.safeClick(closeBtn, `Remove tag button for ${countryName}`);
-            await h.sleep(350);
-          }
+      const normalize = value => value.replace(/\s+/g, ' ').trim().toLowerCase();
+      const requested = new Set(targetCountries.map(normalize));
+      const guard = () => { if (h.isAborted()) throw new Error('Automation aborted or paused by user'); };
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        guard();
+        // Reacquire after every removal; TikTok may replace the entire tag list.
+        const state = this.readLiveLocationField();
+        if (!state?.ready) { await h.sleep(200); continue; }
+        const tags = state.tags;
+        const unwanted = tags.filter(tag => !requested.has(normalize(tag.textContent || '')));
+        if (!unwanted.length) {
+          this.diag(stepName, 'Verified unwanted countries removed before selecting requested countries');
+          return;
         }
+        const tag = unwanted[0];
+        const countryName = (tag.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!countryName || !h.isVisible(tag)) throw new Error('[LOCATION] Cannot safely identify unwanted country tag.');
+        const selectors = '[part="closeIcon"], [aria-label="Remove tag"], [aria-label="Remove"], [part="close"], [part="close-button"]';
+        const controls = [...new Set([
+          ...h.queryShadowAll(selectors, tag),
+          ...(tag.shadowRoot ? h.queryShadowAll(selectors, tag.shadowRoot) : [])
+        ])];
+        const enabled = node => node && node.isConnected !== false && h.isVisible(node) &&
+          !node.disabled && node.getAttribute('aria-disabled') !== 'true' &&
+          !(node.hasAttribute('disabled') && node.getAttribute('disabled') !== 'false');
+        const target = controls.map(control => h.getClickableTarget(control)).find(enabled);
+        if (!target) throw new Error('[LOCATION] Remove button unavailable for "' + countryName + '". New country selection stopped.');
+        guard();
+        this.diag(stepName, 'Removing unwanted country: ' + countryName);
+        h.safeClick(target, 'Remove country ' + countryName);
+        const removalDeadline = Math.min(deadline, Date.now() + 12000);
+        let removed = false;
+        let absentSince = null;
+        while (Date.now() < removalDeadline) {
+          guard();
+          const live = this.readLiveLocationField();
+          if (live?.ready && !live.selected.some(name => normalize(name) === normalize(countryName))) {
+            if (absentSince === null) absentSince = Date.now();
+            if (Date.now() - absentSince >= 400) { removed = true; break; }
+          } else absentSince = null;
+          await h.sleep(200);
+        }
+        if (!removed) throw new Error('[LOCATION] Could not verify removal of "' + countryName + '". New country selection stopped.');
       }
+      throw new Error('[LOCATION] Country cleanup timed out before new country selection.');
     }
 
     /**
