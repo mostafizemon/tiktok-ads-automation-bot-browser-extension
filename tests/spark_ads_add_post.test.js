@@ -96,21 +96,29 @@ class MockNode {
       return parts.some(p => this.matchesSelector(p));
     }
     const single = parts[0];
-    if (single.startsWith('.')) return this.classList.contains(single.slice(1));
-    if (single.startsWith('#')) return this.getAttribute('id') === single.slice(1);
-    if (single.includes('[role=')) {
-      const r = single.match(/\[role=["']?([^"'\]]+)["']?\]/)?.[1];
-      return this.getAttribute('role') === r;
+    if (single.startsWith('.')) {
+      const classes = single.slice(1).split('.').filter(Boolean);
+      return classes.every(c => this.classList.contains(c));
     }
-    if (single.includes('[data-testid=')) {
-      const id = single.match(/\[data-testid="?([^"\]]+)"?\]/)?.[1];
-      return this.getAttribute('data-testid') === id;
+    if (single.startsWith('#')) return this.getAttribute('id') === single.slice(1);
+    if (single.includes('^=')) {
+      const m = single.match(/\[([a-zA-Z0-9_-]+)\^=["']?([^"'\]]+)["']?\]/);
+      if (m) {
+        const attrVal = this.attributes[m[1]] || '';
+        return attrVal.startsWith(m[2]);
+      }
     }
     if (single.includes('*=')) {
       const m = single.match(/\[([a-zA-Z0-9_-]+)\*=["']?([^"'\]]+)["']?\]/);
       if (m) {
         const attrVal = m[1] === 'class' ? Array.from(this.classList._classes).join(' ') : this.attributes[m[1]];
         return !!(attrVal && attrVal.includes(m[2]));
+      }
+    }
+    if (single.includes('=')) {
+      const m = single.match(/\[([a-zA-Z0-9_-]+)=["']?([^"'\]]+)["']?\]/);
+      if (m) {
+        return this.attributes[m[1]] === m[2];
       }
     }
     return this.tagName.toLowerCase() === single.toLowerCase();
@@ -190,7 +198,16 @@ class MockNode {
       if (sel.toLowerCase() === tag) return true;
 
       if (sel.startsWith('.')) {
-        return el.classList.contains(sel.slice(1));
+        const classes = sel.slice(1).split('.').filter(Boolean);
+        return classes.every(c => el.classList.contains(c));
+      }
+
+      if (sel.includes('^=')) {
+        const m = sel.match(/\[([a-zA-Z0-9_-]+)\^=["']?([^"'\]]+)["']?\]/);
+        if (m) {
+          const attrVal = el.attributes[m[1]] || '';
+          return attrVal.startsWith(m[2]);
+        }
       }
 
       if (sel.includes('*=')) {
@@ -456,17 +473,31 @@ function buildModalFixture(mockDocument) {
   return { modal, textarea, continueBtn, addPostsBtn };
 }
 
-// Helper: Add post card to drawer
+// Helper: Add post card to drawer matching real TikTok DOM
 function addPostCard(drawer, isSelected = false) {
-  const card = new MockNode('DIV', { class: 'post-card', 'data-testid': 'post-item-123' });
-  card.innerText = 'TikTok Post 123';
-  const checkbox = new MockNode('DIV', { role: 'checkbox', class: isSelected ? 'byted-checkbox is-checked' : 'byted-checkbox' });
-  card.appendChild(checkbox);
-  drawer.appendChild(card);
-  return { card, checkbox };
+  const item = new MockNode('DIV', {
+    class: 'item',
+    'data-testid': 'tab-tab-common-skeleton-d3JhdZ-7611878030172278037',
+    'data-tea-tab': 'tiktok_mixed_post'
+  });
+  const container = new MockNode('DIV', { class: isSelected ? 'container selected' : 'container' });
+  const label = new MockNode('LABEL', {
+    'data-testid': 'card-index-bqEQYC',
+    role: 'checkbox',
+    class: isSelected ? 'vi-checkbox cardCheckbox checkbox is-checked' : 'vi-checkbox cardCheckbox checkbox'
+  });
+  if (isSelected) label.setAttribute('aria-checked', 'true');
+  const span = new MockNode('SPAN', {
+    class: isSelected ? 'vi-checkbox__input is-checked' : 'vi-checkbox__input',
+    'aria-checked': 'mixed'
+  });
+  label.appendChild(span);
+  container.appendChild(label);
+  item.appendChild(container);
+  drawer.appendChild(item);
+  return { item, container, label, checkbox: label };
 }
 
-// Only the Confirm button changes between attempts; there are deliberately no post cards.
 function authorizationFixture(env, { enabledAt = 1, missing = false, processing = false, error = '', ambiguous = false, exactHtml = false } = {}) {
   const { CampaignAutomation: campaign, mockDocument: doc } = env;
   const { drawer, confirmBtn, addPostBtn } = buildDrawerFixture(doc);
@@ -477,6 +508,22 @@ function authorizationFixture(env, { enabledAt = 1, missing = false, processing 
   for (const method of ['findPostItemsInDrawer', 'findMatchingPostItems', 'isTikTokPostDrawerEmpty', 'selectPostInDrawer']) {
     campaign[method] = () => { throw new Error(`Forbidden post-card dependency: ${method}`); };
   }
+
+  let postCard = null;
+  const setSelected = (selected = true) => {
+    if (postCard?.item?.parentElement) {
+      drawer.removeChild(postCard.item);
+    }
+    postCard = addPostCard(drawer, selected);
+    return postCard;
+  };
+
+  if (enabledAt <= 0) {
+    setSelected(true);
+  } else {
+    setSelected(false);
+  }
+
   // Replace fixture close handler to test both completed and ambiguous confirmation.
   confirmBtn.eventListeners.click = [() => {
     counts.confirmed++;
@@ -508,10 +555,13 @@ function authorizationFixture(env, { enabledAt = 1, missing = false, processing 
         if (!confirmBtn.parentElement) drawer.appendChild(confirmBtn);
         if (exactHtml) applyConfirmHtml(confirmBtn, ENABLED_CONFIRM_HTML);
         else confirmBtn.removeAttribute('disabled');
+        setSelected(true);
+      } else {
+        setSelected(false);
       }
     });
   });
-  return { drawer, confirmBtn, addPostBtn, counts };
+  return { drawer, confirmBtn, addPostBtn, counts, setSelected };
 }
 
 async function runAllTests() {
@@ -575,12 +625,13 @@ async function runAllTests() {
   });
 
   await test('Exact disabled HTML becomes enabled during settling without reauthorizing', async env => {
-    const { confirmBtn, counts } = authorizationFixture(env, { exactHtml: true, enabledAt: Infinity });
+    const { confirmBtn, counts, setSelected } = authorizationFixture(env, { exactHtml: true, enabledAt: Infinity });
     let polls = 0;
     env.onSleep = async () => {
       const job = await env.StorageService.getJobState();
       if (job.addPostPhase === 'AWAITING_CONFIRM' && ++polls === 2) {
         applyConfirmHtml(confirmBtn, ENABLED_CONFIRM_HTML);
+        setSelected(true);
       }
     };
     await env.CampaignAutomation.attachSparkAdsPostWithRetry('SAME_CODE');
@@ -735,8 +786,9 @@ async function runAllTests() {
   });
 
   await test('Pending fifth attempt can finish after reinvocation without reauthorizing', async env => {
-    const { confirmBtn, counts } = authorizationFixture(env);
+    const { confirmBtn, counts, setSelected } = authorizationFixture(env);
     confirmBtn.removeAttribute('disabled');
+    setSelected(true);
     await env.StorageService.updateJobState({ addPostAttemptCount: 5, addPostRunId: 'run_test', addPostCampaignIndex: 1, addPostPhase: 'PROCESSING' });
     const result = await env.CampaignAutomation.attachSparkAdsPostWithRetry('CODE');
     assert.strictEqual(result.success, true);
@@ -770,11 +822,12 @@ async function runAllTests() {
 
   await test('New campaign and new run each receive their own counter', async env => {
     await env.StorageService.updateJobState({ addPostAttemptCount: 5, addPostRunId: 'run_test', addPostCampaignIndex: 1, addPostPhase: 'EXHAUSTED', currentCampaignIndex: 2 });
-    const { drawer, confirmBtn, counts } = authorizationFixture(env);
+    const { drawer, confirmBtn, counts, setSelected } = authorizationFixture(env);
     await env.CampaignAutomation.attachSparkAdsPostWithRetry('CODE', 2);
     assert.strictEqual((await env.StorageService.getJobState()).addPostAttemptCount, 1);
     drawer.style.display = 'block';
     confirmBtn.setAttribute('disabled', 'true');
+    setSelected(false);
     await env.StorageService.updateJobState({ runId: 'run_new', currentCampaignIndex: 1 });
     await env.CampaignAutomation.attachSparkAdsPostWithRetry('CODE', 1);
     assert.strictEqual((await env.StorageService.getJobState()).addPostAttemptCount, 1);
@@ -836,6 +889,89 @@ async function runAllTests() {
     await assert.rejects(env.CampaignAutomation.attachSparkAdsPostWithRetry('CODE'), { code: 'ADD_POST_NEEDS_VERIFICATION' });
     assert.strictEqual(counts.add, 0);
     assert.strictEqual(counts.confirmed, 0);
+  });
+
+  await test('hasSelectedTikTokPost accurately distinguishes unselected vs selected post items', async env => {
+    const c = env.CampaignAutomation;
+    const { drawer } = buildDrawerFixture(env.mockDocument);
+    assert.strictEqual(c.hasSelectedTikTokPost(drawer), false);
+
+    // 1. Unselected TikTok post item matching user HTML
+    const unselectedItem = new MockNode('DIV', {
+      class: 'item',
+      'data-testid': 'tab-tab-common-skeleton-d3JhdZ-7611878030172278037',
+      'data-tea-tab': 'tiktok_mixed_post'
+    });
+    const unselectedContainer = new MockNode('DIV', { class: 'container' });
+    const unselectedLabel = new MockNode('LABEL', {
+      'data-testid': 'card-index-bqEQYC',
+      role: 'checkbox',
+      class: 'vi-checkbox cardCheckbox checkbox'
+    });
+    const unselectedSpan = new MockNode('SPAN', {
+      class: 'vi-checkbox__input',
+      'aria-checked': 'mixed'
+    });
+    unselectedLabel.appendChild(unselectedSpan);
+    unselectedContainer.appendChild(unselectedLabel);
+    unselectedItem.appendChild(unselectedContainer);
+    drawer.appendChild(unselectedItem);
+
+    assert.strictEqual(c.hasSelectedTikTokPost(drawer), false, 'Unselected post must return false');
+
+    // 2. Selected TikTok post item matching user HTML
+    const selectedItem = new MockNode('DIV', {
+      class: 'item',
+      'data-testid': 'tab-tab-common-skeleton-d3JhdZ-7573077093462838546',
+      'data-tea-tab': 'tiktok_mixed_post'
+    });
+    const selectedContainer = new MockNode('DIV', { class: 'container selected' });
+    const selectedLabel = new MockNode('LABEL', {
+      'data-testid': 'card-index-bqEQYC',
+      role: 'checkbox',
+      class: 'vi-checkbox cardCheckbox checkbox is-checked'
+    });
+    selectedLabel.setAttribute('aria-checked', 'true');
+    const selectedSpan = new MockNode('SPAN', {
+      class: 'vi-checkbox__input is-checked',
+      'aria-checked': 'mixed'
+    });
+    selectedLabel.appendChild(selectedSpan);
+    selectedContainer.appendChild(selectedLabel);
+    selectedItem.appendChild(selectedContainer);
+    drawer.appendChild(selectedItem);
+
+    assert.strictEqual(c.hasSelectedTikTokPost(drawer), true, 'Selected post must return true');
+
+    // 3. Remove selected item, leaves only unselected item
+    drawer.removeChild(selectedItem);
+    assert.strictEqual(c.hasSelectedTikTokPost(drawer), false, 'Only unselected remaining must return false');
+  });
+
+  await test('New UI behavior: Confirm button enabled from start does NOT confirm if 0 posts selected; retries until post selected', async env => {
+    const { confirmBtn, counts, setSelected } = authorizationFixture(env, { enabledAt: 2 });
+    // In TikTok's new UI, Confirm button remains enabled even with 0 posts selected:
+    confirmBtn.removeAttribute('disabled');
+    setSelected(false);
+
+    const result = await env.CampaignAutomation.attachSparkAdsPostWithRetry('TEST_CODE');
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.attempts, 2, 'Must retry since attempt 1 had 0 selected posts despite enabled Confirm');
+    assert.strictEqual(counts.add, 2);
+    assert.strictEqual(counts.confirmed, 1, 'Confirm must be clicked only once after post selection');
+  });
+
+  await test('New UI behavior: Confirm button enabled from start exhausts after 5 attempts if no post is selected', async env => {
+    const { confirmBtn, counts, setSelected } = authorizationFixture(env, { enabledAt: Infinity });
+    // Confirm is enabled, but no post is ever selected:
+    confirmBtn.removeAttribute('disabled');
+    setSelected(false);
+
+    await assert.rejects(env.CampaignAutomation.attachSparkAdsPostWithRetry('TEST_CODE'), {
+      code: 'POST_RETRY_EXHAUSTED'
+    });
+    assert.strictEqual(counts.add, 5, 'Must attempt 5 times before exhausting');
+    assert.strictEqual(counts.confirmed, 0, 'Confirm must NEVER be clicked when 0 posts are selected');
   });
 
   console.log(`SPARK ADS ADD POST TEST RESULTS: ${passed} PASSED, ${failed} FAILED`);

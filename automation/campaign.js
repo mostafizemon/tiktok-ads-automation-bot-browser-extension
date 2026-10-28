@@ -3585,6 +3585,78 @@
      * @param {number} [timeoutMs=5000]
      * @returns {Promise<HTMLElement|null>}
      */
+    /**
+     * Check if a TikTok post is actively selected in the creative assets drawer.
+     * With TikTok's latest UI update, the drawer Confirm/Save button is no longer disabled
+     * when 0 posts are selected. The bot must verify actual post selection before confirming.
+     * @param {HTMLElement} drawer
+     * @returns {boolean}
+     */
+    hasSelectedTikTokPost(drawer) {
+      const h = this.helpers;
+      if (!drawer?.isConnected || !h.isVisible(drawer)) return false;
+      const visible = node => {
+        if (!node || !h.isVisible(node)) return false;
+        for (let current = node; current && current !== drawer;
+             current = current.assignedSlot || current.parentElement || current.getRootNode?.().host) {
+          if (!current.tagName || current.tagName.startsWith('#')) continue;
+          if (current.hasAttribute && current.hasAttribute('hidden')) return false;
+          if (current.getAttribute && current.getAttribute('aria-hidden') === 'true') return false;
+          if (current.style && (current.style.display === 'none' || current.style.visibility === 'hidden' || current.style.opacity === '0')) return false;
+          if (window.getComputedStyle && typeof window.getComputedStyle === 'function') {
+            const style = window.getComputedStyle(current);
+            if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) return false;
+          }
+        }
+        return true;
+      };
+
+      const isInsideUnrelatedModal = node => {
+        const owner = node.closest ? node.closest('[role="dialog"], .byted-modal, .arco-modal') : null;
+        return !!(owner && owner !== drawer && drawer.contains(owner));
+      };
+
+      // 1. Direct check on post card checkbox elements:
+      // Real TikTok HTML: label[data-testid="card-index-bqEQYC"][role="checkbox"]
+      const cardCheckboxes = h.queryShadowAll('label[data-testid="card-index-bqEQYC"], [data-testid="card-index-bqEQYC"], label.cardCheckbox, .cardCheckbox', drawer);
+      for (const cb of cardCheckboxes) {
+        if (!visible(cb) || isInsideUnrelatedModal(cb)) continue;
+        const checked = cb.getAttribute('aria-checked');
+        if (checked === 'true') return true;
+        const isCheckedClass = cb.classList?.contains('is-checked');
+        const container = cb.closest ? cb.closest('.container') : cb.parentElement;
+        const containerSelected = container?.classList?.contains('selected');
+        if (isCheckedClass || containerSelected) return true;
+        const innerInput = cb.querySelector ? cb.querySelector('.vi-checkbox__input') : null;
+        if (innerInput?.classList?.contains('is-checked')) return true;
+        const nativeInput = cb.querySelector ? cb.querySelector('input[type="checkbox"]') : null;
+        if (nativeInput?.checked) return true;
+      }
+
+      // 2. Direct check on container with selected class: <div class="container selected">
+      const containers = h.queryShadowAll('.container.selected, .selected', drawer);
+      for (const cont of containers) {
+        if (!visible(cont) || isInsideUnrelatedModal(cont)) continue;
+        if (cont.classList?.contains('container') && cont.classList?.contains('selected')) {
+          return true;
+        }
+      }
+
+      // 3. Post card candidates check (supports both real UI cards and test mocks)
+      const cards = h.queryShadowAll('[data-tea-tab="tiktok_mixed_post"], [data-testid*="tab-tab-common-skeleton"], [data-testid*="post-item"], [class*="post-card"], .item', drawer);
+      return cards.some(card => {
+        if (!visible(card) || isInsideUnrelatedModal(card)) return false;
+        if (card.classList?.contains('selected') || card.classList?.contains('is-checked')) return true;
+        const cb = card.querySelector ? card.querySelector('[role="checkbox"], input[type="checkbox"], .byted-checkbox, .arco-checkbox') : null;
+        if (cb && visible(cb)) {
+          if (cb.getAttribute('aria-checked') === 'true') return true;
+          if (cb.classList?.contains('is-checked')) return true;
+          if (cb.checked) return true;
+        }
+        return false;
+      });
+    }
+
     async waitForConfirmButtonEnabled(drawer, timeoutMs = 5000) {
       return this.waitForAddPostCondition(() => {
         if (!drawer.isConnected || !this.helpers.isVisible(drawer)) return null;
@@ -3715,8 +3787,8 @@
       this.checkAddPostAbort();
       this.checkAddPostErrors();
       if (!button || drawer.querySelector('button[data-testid="hybrid-drawer-footer-submit-button"]') !== button ||
-          !this.isAddPostButtonEnabled(button)) {
-        throw this.addPostVerificationError('Confirm button changed before confirmation. Verify the drawer manually.');
+          !this.isAddPostButtonEnabled(button) || !this.hasSelectedTikTokPost(drawer)) {
+        throw this.addPostVerificationError('Post selection or Confirm button changed before confirmation. Verify the drawer manually.');
       }
       console.log('[ADD POST] Confirm enabled');
       // The controller persists CONFIRMING before this click, so re-entry cannot repeat it.
@@ -3783,7 +3855,7 @@
       console.log('[ADD POST] Add TikTok posts clicked');
     }
 
-    /** One authorization retry loop. Only the exact drawer Confirm state decides whether to retry. */
+    /** One authorization retry loop. Verify post selection before the drawer Save/Confirm action. */
     async attachSparkAdsPostWithRetry(authCode, campaignIndex = 1) {
       const MAX_ATTEMPTS = 5;
       const h = this.helpers;
@@ -3839,16 +3911,23 @@
               }
             }
             await this.storage.updateJobState({ addPostPhase: 'AWAITING_CONFIRM' });
-            console.log('[ADD POST] Waiting for Confirm button');
-            const confirm = await this.waitForConfirmButtonEnabled(drawer);
-            if (confirm) {
+            console.log('[ADD POST] Waiting for a selected TikTok post and enabled Confirm button');
+            const readyToConfirm = await this.waitForAddPostCondition(() => {
+              if (!drawer.isConnected || !this.helpers.isVisible(drawer)) return null;
+              if (!this.hasSelectedTikTokPost(drawer)) return null;
+              const button = drawer.querySelector('button[data-testid="hybrid-drawer-footer-submit-button"]');
+              const dialog = button?.closest('[role="dialog"], .byted-modal, .arco-modal');
+              if (dialog && dialog !== drawer && drawer.contains(dialog)) return null;
+              return this.isAddPostButtonEnabled(button) ? button : null;
+            }, 5000);
+            if (readyToConfirm) {
               await this.storage.updateJobState({ addPostPhase: 'CONFIRMING' });
-              await this.clickConfirmAndVerifyAttachment(drawer, authCode, confirm);
+              await this.clickConfirmAndVerifyAttachment(drawer, authCode, readyToConfirm);
               await this.storage.updateJobState({ addPostPhase: 'COMPLETED' });
               console.log('[ADD POST] Authorization flow completed');
               return { success: true, attempts: attempt, attached: true };
             }
-            console.log('[ADD POST] Confirm not enabled');
+            console.log('[ADD POST] No selected post or Confirm unavailable; retrying Add Post');
             phase = 'READY';
             await this.storage.updateJobState({ addPostPhase: phase });
             if (attempt < MAX_ATTEMPTS) {
@@ -3857,7 +3936,7 @@
             }
           }
         }
-        console.error('[ADD POST ERROR] Confirm unavailable after 5 attempts');
+        console.error('[ADD POST ERROR] Confirm unavailable or no post selected after 5 attempts');
         const error = new Error('Confirm button did not become enabled after 5 Add Post attempts');
         error.code = 'POST_RETRY_EXHAUSTED';
         await this.storage.updateJobState({
